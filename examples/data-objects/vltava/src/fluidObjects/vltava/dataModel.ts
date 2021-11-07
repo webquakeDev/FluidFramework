@@ -1,15 +1,15 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { EventEmitter } from "events";
 
 import { IFluidObject, IFluidHandle } from "@fluidframework/core-interfaces";
-import { IFluidLastEditedTracker } from "@fluidframework/last-edited-experimental";
+import { IFluidLastEditedTracker } from "@fluid-experimental/last-edited";
 import { IFluidDataStoreContext } from "@fluidframework/runtime-definitions";
 import { IFluidDataStoreRuntime } from "@fluidframework/datastore-definitions";
-import { IQuorum, ISequencedClient } from "@fluidframework/protocol-definitions";
+import { IQuorumClients, ISequencedClient } from "@fluidframework/protocol-definitions";
 import { ContainerRuntimeFactoryWithDefaultDataStore } from "@fluidframework/aqueduct";
 import { handleFromLegacyUri } from "@fluidframework/request-handler";
 
@@ -25,13 +25,12 @@ export interface IVltavaLastEditedState {
 
 export interface IVltavaDataModel extends EventEmitter {
     getDefaultFluidObject(): Promise<IFluidObject>;
-    getTitle(): string;
     getUsers(): IVltavaUserDetails[];
     getLastEditedState(): Promise<IVltavaLastEditedState | undefined>;
 }
 
 export class VltavaDataModel extends EventEmitter implements IVltavaDataModel {
-    private readonly quorum: IQuorum;
+    private readonly quorum: IQuorumClients;
     private users: IVltavaUserDetails[] = [];
     private lastEditedTracker: IFluidLastEditedTracker | undefined;
 
@@ -59,11 +58,8 @@ export class VltavaDataModel extends EventEmitter implements IVltavaDataModel {
     }
 
     public async getDefaultFluidObject(): Promise<IFluidObject> {
-        return this.defaultFluidObject.get();
-    }
-
-    public getTitle(): string {
-        return this.context.documentId;
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        return this.defaultFluidObject.get()!;
     }
 
     public getUsers(): IVltavaUserDetails[] {

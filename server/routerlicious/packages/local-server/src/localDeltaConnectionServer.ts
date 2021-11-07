@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -25,6 +25,7 @@ import {
     MongoDatabaseManager,
     MongoManager,
 } from "@fluidframework/server-services-core";
+import { Lumberjack, TestEngine1 } from "@fluidframework/server-services-telemetry";
 import {
     DebugLogger,
     ITestDbFactory,
@@ -44,6 +45,7 @@ export interface ILocalDeltaConnectionServer {
     webSocketServer: IWebSocketServer;
     databaseManager: IDatabaseManager;
     testDbFactory: ITestDbFactory;
+    close(): Promise<void>;
     hasPendingWork(): Promise<boolean>;
     connectWebSocket(
         tenantId: string,
@@ -64,6 +66,11 @@ export class LocalDeltaConnectionServer implements ILocalDeltaConnectionServer {
         testDbFactory: ITestDbFactory = new TestDbFactory({}),
         serviceConfiguration?: Partial<IServiceConfiguration>,
     ): ILocalDeltaConnectionServer {
+        if (!Lumberjack.isSetupCompleted())
+        {
+            Lumberjack.setup([new TestEngine1()]);
+        }
+
         const nodesCollectionName = "nodes";
         const documentsCollectionName = "documents";
         const deltasCollectionName = "deltas";
@@ -125,6 +132,11 @@ export class LocalDeltaConnectionServer implements ILocalDeltaConnectionServer {
         public documentStorage: IDocumentStorage,
         private readonly logger: ILogger) { }
 
+    public async close() {
+        await this.webSocketServer.close();
+        await this.ordererManager.close();
+    }
+
     /**
      * Returns true if there are any received ops that are not yet ordered.
      */
@@ -156,12 +168,14 @@ export class LocalDeltaConnectionServer implements ILocalDeltaConnectionServer {
 
             const earlyOpHandler = (docId: string, msgs: ISequencedDocumentMessage[]) => {
                 this.logger.info(`Queued early ops: ${msgs.length}`);
+                Lumberjack.info(`Queued early ops: ${msgs.length}`);
                 queuedMessages.push(...msgs);
             };
             socket.on("op", earlyOpHandler);
 
             const earlySignalHandler = (msg: ISignalMessage) => {
                 this.logger.info("Queued early signals");
+                Lumberjack.info("Queued early signals");
                 queuedSignals.push(msg);
             };
             socket.on("signal", earlySignalHandler);

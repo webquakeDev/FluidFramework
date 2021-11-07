@@ -1,14 +1,15 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import assert from "assert";
+import { assert } from "@fluidframework/common-utils";
 import * as resources from "@fluidframework/gitresources";
 import { buildHierarchy } from "@fluidframework/protocol-base";
 import * as api from "@fluidframework/protocol-definitions";
 import { debug } from "./debug";
 import { ICreateRefParamsExternal, IPatchRefParamsExternal, IGitManager, IHistorian } from "./storage";
+import { IWholeFlatSummary, IWholeSummaryPayload, IWriteSummaryResponse } from "./storageContracts";
 
 export class GitManager implements IGitManager {
     private readonly blobCache = new Map<string, resources.IBlob>();
@@ -118,7 +119,7 @@ export class GitManager implements IGitManager {
         return this.historian.getContent(path, commit);
     }
 
-    public createBlob(content: string, encoding: string): Promise<resources.ICreateBlobResponse> {
+    public createBlob(content: string, encoding: "utf-8" |"base64"): Promise<resources.ICreateBlobResponse> {
         const blob: resources.ICreateBlobParams = {
             content,
             encoding,
@@ -138,6 +139,18 @@ export class GitManager implements IGitManager {
 
     public async createCommit(commit: resources.ICreateCommitParams): Promise<resources.ICommit> {
         return this.historian.createCommit(commit);
+    }
+
+    public async createSummary(summary: IWholeSummaryPayload): Promise<IWriteSummaryResponse> {
+        return this.historian.createSummary(summary);
+    }
+
+    public async deleteSummary(softDelete: boolean): Promise<void> {
+        return this.historian.deleteSummary(softDelete);
+    }
+
+    public async getSummary(sha: string): Promise<IWholeFlatSummary> {
+        return this.historian.getSummary(sha);
     }
 
     public async getRef(ref: string): Promise<resources.IRef> {
@@ -258,10 +271,6 @@ export class GitManager implements IGitManager {
                     entriesP.push(treeBlobP);
                     break;
 
-                case api.TreeEntry.Commit:
-                    entriesP.push(Promise.resolve({ sha: entry.value as string, url: "" }));
-                    break;
-
                 default:
                     return Promise.reject(new Error("Unknown entry type"));
             }
@@ -271,7 +280,7 @@ export class GitManager implements IGitManager {
         // Wait for them all to resolve
         const entries = await Promise.all(entriesP);
         const tree: resources.ICreateTreeEntry[] = [];
-        assert(entries.length === files.entries.length);
+        assert(entries.length === files.entries.length, "File entries length is not correct");
 
         // Construct a new tree from the collection of hashes
         for (let i = 0; i < files.entries.length; i++) {

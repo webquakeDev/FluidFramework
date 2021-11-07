@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -7,12 +7,13 @@ import { strict as assert } from "assert";
 import { DebugLogger } from "@fluidframework/telemetry-utils";
 import { ISequencedDocumentMessage, ITree, MessageType } from "@fluidframework/protocol-definitions";
 import { IFluidDataStoreRuntime } from "@fluidframework/datastore-definitions";
-// eslint-disable-next-line import/no-extraneous-dependencies
 import { MockStorage } from "@fluidframework/test-runtime-utils";
-// eslint-disable-next-line import/no-extraneous-dependencies
 import random from "random-js";
 import { Client } from "../client";
-import * as Collections from "../collections";
+import {
+    List,
+    ListMakeHead,
+} from "../collections";
 import { UnassignedSequenceNumber } from "../constants";
 import { ISegment, Marker, MergeTree } from "../mergeTree";
 import { createInsertSegmentOp, createRemoveRangeOp } from "../opBuilder";
@@ -52,7 +53,8 @@ export class TestClient extends Client {
     public static async createFromClientSnapshot(client1: TestClient, newLongClientId: string): Promise<TestClient> {
         const snapshot = new SnapshotLegacy(client1.mergeTree, DebugLogger.create("fluid:snapshot"));
         snapshot.extractSync();
-        const snapshotTree = snapshot.emit([], TestClient.serializer);
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        const snapshotTree = snapshot.emit([], TestClient.serializer, undefined!);
         return TestClient.createFromSnapshot(snapshotTree, newLongClientId, client1.specToSegment);
     }
 
@@ -75,11 +77,11 @@ export class TestClient extends Client {
         return client2;
     }
 
-    public mergeTree: MergeTree;
+    declare public mergeTree: MergeTree;
 
-    public readonly checkQ: Collections.List<string> = Collections.ListMakeHead<string>();
+    public readonly checkQ: List<string> = ListMakeHead<string>();
     // eslint-disable-next-line max-len
-    protected readonly q: Collections.List<ISequencedDocumentMessage> = Collections.ListMakeHead<ISequencedDocumentMessage>();
+    protected readonly q: List<ISequencedDocumentMessage> = ListMakeHead<ISequencedDocumentMessage>();
 
     private readonly textHelper: MergeTreeTextHelper;
     constructor(

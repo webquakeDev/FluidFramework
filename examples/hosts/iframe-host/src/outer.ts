@@ -1,19 +1,17 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import * as Comlink from "comlink";
 import { fluidExport as TodoContainer } from "@fluid-example/todo";
-import { Container } from "@fluidframework/container-loader";
+import { getTinyliciousContainer } from "@fluid-experimental/get-container";
 import { IFluidObject } from "@fluidframework/core-interfaces";
-import {
-    getTinyliciousContainer,
-    InsecureTinyliciousUrlResolver,
-} from "@fluidframework/get-tinylicious-container";
+import { InsecureTinyliciousUrlResolver } from "@fluidframework/tinylicious-driver";
 import { RouterliciousDocumentServiceFactory } from "@fluidframework/routerlicious-driver";
 import { HTMLViewAdapter } from "@fluidframework/view-adapters";
 import { InsecureTokenProvider } from "@fluidframework/test-runtime-utils";
+import { IContainer } from "@fluidframework/container-definitions";
 import { ContainerProxy } from "./containerProxy";
 import {
     IFrameInnerApi,
@@ -33,6 +31,7 @@ export async function loadFrame(
     iframeDivId: string,
     dataStoreDivId: string,
     logDivId: string,
+    tinyliciousPort?: number,
 ) {
     const documentId = getDocumentId();
     const iframeDiv = document.getElementById(iframeDivId) as HTMLIFrameElement;
@@ -42,7 +41,7 @@ export async function loadFrame(
     iframe.sandbox.add("allow-scripts", "allow-forms", "allow-same-origin");
     iframeDiv.appendChild(iframe);
 
-    const urlResolver = new InsecureTinyliciousUrlResolver();
+    const urlResolver = new InsecureTinyliciousUrlResolver(tinyliciousPort);
 
     const tokenProvider = new InsecureTokenProvider("12345", { id: "userid0" });
     const documentServiceFactory = new RouterliciousDocumentServiceFactory(tokenProvider);
@@ -81,13 +80,9 @@ export async function loadFrame(
     });
 }
 
-async function getFluidObjectAndRender(container: Container, div: HTMLDivElement) {
+async function getFluidObjectAndRender(container: IContainer, div: HTMLDivElement) {
     const response = await container.request({ url: "/" });
-    if (response.status !== 200 ||
-        !(
-            response.mimeType === "fluid/component" ||
-            response.mimeType === "fluid/object"
-        )) {
+    if (response.status !== 200 || response.mimeType !== "fluid/object") {
         return undefined;
     }
     const fluidObject = response.value as IFluidObject;
@@ -98,7 +93,7 @@ async function getFluidObjectAndRender(container: Container, div: HTMLDivElement
 }
 
 async function loadOuterLogDiv(
-    container: Container,
+    container: IContainer,
     logDivId: string,
 ): Promise<void> {
     const logDiv = document.getElementById(logDivId) as HTMLDivElement;
@@ -106,7 +101,7 @@ async function loadOuterLogDiv(
     const quorum = container.getQuorum();
     if (!quorum.has("code")) {
         // we'll never propose the code, so wait for them to do it
-        await new Promise((resolve) => container.once("contextChanged", () => resolve()));
+        await new Promise<void>((resolve) => container.once("contextChanged", () => resolve()));
     }
 
     const log =
@@ -130,7 +125,7 @@ async function loadOuterLogDiv(
 async function loadOuterDataStoreDiv(
     dataStoreDivId: string,
 ): Promise<void> {
-    const container = await getTinyliciousContainer(
+    const [container] = await getTinyliciousContainer(
         getDocumentId(),
         TodoContainer,
         // The container is always expected to have been created here
@@ -138,10 +133,10 @@ async function loadOuterDataStoreDiv(
     );
 
     const dataStoreDiv = document.getElementById(dataStoreDivId) as HTMLDivElement;
-    getFluidObjectAndRender(container, dataStoreDiv).catch(() => {});
+    getFluidObjectAndRender(container, dataStoreDiv).catch(() => { });
     // Handle the code upgrade scenario (which fires contextChanged)
     container.on("contextChanged", (value) => {
-        getFluidObjectAndRender(container, dataStoreDiv).catch(() => {});
+        getFluidObjectAndRender(container, dataStoreDiv).catch(() => { });
     });
 }
 

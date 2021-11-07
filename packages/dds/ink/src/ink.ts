@@ -1,9 +1,8 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import { fromBase64ToUtf8 } from "@fluidframework/common-utils";
 import { IFluidSerializer } from "@fluidframework/core-interfaces";
 import {
     FileMode,
@@ -17,6 +16,7 @@ import {
     IChannelStorageService,
     IChannelAttributes,
 } from "@fluidframework/datastore-definitions";
+import { readAndParse } from "@fluidframework/driver-utils";
 import { SharedObject } from "@fluidframework/shared-object-base";
 import { v4 as uuid } from "uuid";
 import { InkFactory } from "./inkFactory";
@@ -204,8 +204,6 @@ export class Ink extends SharedObject<IInkEvents> implements IInk {
                     },
                 },
             ],
-            // eslint-disable-next-line no-null/no-null
-            id: null,
         };
 
         return tree;
@@ -215,12 +213,8 @@ export class Ink extends SharedObject<IInkEvents> implements IInk {
      * {@inheritDoc @fluidframework/shared-object-base#SharedObject.loadCore}
      */
     protected async loadCore(storage: IChannelStorageService): Promise<void> {
-        const header = await storage.read(snapshotFileName);
-        if (header !== undefined) {
-            this.inkData = new InkData(
-                JSON.parse(fromBase64ToUtf8(header)) as ISerializableInk,
-            );
-        }
+        const content = await readAndParse<ISerializableInk>(storage, snapshotFileName);
+        this.inkData = new InkData(content);
     }
 
     /**
@@ -291,5 +285,9 @@ export class Ink extends SharedObject<IInkEvents> implements IInk {
             this.emit("stylus", operation);
         }
         return stroke;
+    }
+
+    protected applyStashedOp() {
+        throw new Error("not implemented");
     }
 }

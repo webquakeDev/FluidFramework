@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -12,14 +12,19 @@ import {
     IThrottler,
     MongoManager,
 } from "@fluidframework/server-services-core";
-import { throttle, IThrottleMiddlewareOptions } from "@fluidframework/server-services-utils";
+import {
+    verifyStorageToken,
+    throttle,
+    IThrottleMiddlewareOptions,
+    getParam,
+} from "@fluidframework/server-services-utils";
 import { Router } from "express";
 import { Provider } from "nconf";
 import winston from "winston";
 import { IAlfredTenant } from "@fluidframework/server-services-client";
-import { getParam, Constants } from "../../../utils";
+import { Constants, handleResponse } from "../../../utils";
 
-export async function getDeltas(
+async function getDeltas(
     mongoManager: MongoManager,
     collectionName: string,
     tenantId: string,
@@ -59,7 +64,7 @@ async function getDeltasFromStorage(
     toTerm: number,
     fromSeq?: number,
     toSeq?: number): Promise<ISequencedDocumentMessage[]> {
-    const query: any = { documentId, tenantId };
+    const query: any = { documentId, tenantId, scheduledDeletionTime: { $exists: false } };
     query["operation.term"] = {};
     query["operation.sequenceNumber"] = {};
     query["operation.term"].$gte = fromTerm;
@@ -87,7 +92,7 @@ async function getDeltasFromSummaryAndStorage(
     documentId: string,
     from?: number,
     to?: number) {
-    const tenant = await tenantManager.getTenant(tenantId);
+    const tenant = await tenantManager.getTenant(tenantId, documentId);
     const gitManager = tenant.gitManager;
 
     const existingRef = await gitManager.getRef(encodeURIComponent(documentId));
@@ -191,7 +196,8 @@ export function create(
      * Retrieves deltas for the given document. With an optional from and to range (both exclusive) specified
      */
     router.get(
-        ["/v1/:tenantId?/:id", "/:tenantId?/:id/v1"],
+        ["/v1/:tenantId/:id", "/:tenantId/:id/v1"],
+        verifyStorageToken(tenantManager, config),
         throttle(throttler, winston, commonThrottleOptions),
         (request, response, next) => {
             const from = stringToSequenceNumber(request.query.from);
@@ -208,13 +214,7 @@ export function create(
                 from,
                 to);
 
-            deltasP.then(
-                (deltas) => {
-                    response.status(200).json(deltas);
-                },
-                (error) => {
-                    response.status(500).json(error);
-                });
+            handleResponse(deltasP, response, 500);
         },
     );
 
@@ -222,7 +222,8 @@ export function create(
      * Retrieves raw (unsequenced) deltas for the given document.
      */
     router.get(
-        "/raw/:tenantId?/:id",
+        "/raw/:tenantId/:id",
+        verifyStorageToken(tenantManager, config),
         throttle(throttler, winston, commonThrottleOptions),
         (request, response, next) => {
             const tenantId = getParam(request.params, "tenantId") || appTenants[0].id;
@@ -234,13 +235,7 @@ export function create(
                 tenantId,
                 getParam(request.params, "id"));
 
-            deltasP.then(
-                (deltas) => {
-                    response.status(200).json(deltas);
-                },
-                (error) => {
-                    response.status(500).json(error);
-                });
+            handleResponse(deltasP, response, 500);
         },
     );
 
@@ -248,7 +243,8 @@ export function create(
      * Retrieves deltas for the given document. With an optional from and to range (both exclusive) specified
      */
     router.get(
-        "/:tenantId?/:id",
+        "/:tenantId/:id",
+        verifyStorageToken(tenantManager, config),
         throttle(throttler, winston, commonThrottleOptions),
         (request, response, next) => {
             const from = stringToSequenceNumber(request.query.from);
@@ -264,13 +260,7 @@ export function create(
                 from,
                 to);
 
-            deltasP.then(
-                (deltas) => {
-                    response.status(200).json(deltas);
-                },
-                (error) => {
-                    response.status(500).json(error);
-                });
+            handleResponse(deltasP, response, 500);
         },
     );
 

@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -84,6 +84,14 @@ describe("Cell", () => {
                 await cell2.load(services);
 
                 assert.equal(cell2.get(), "testValue", "Could not load SharedCell from snapshot");
+            });
+
+            it("can load a SharedCell with undefined value from snapshot", async () => {
+                const services = MockSharedObjectServices.createFromSummary(cell.summarize().summary);
+                const cell2 = new SharedCell("cell2", new MockFluidDataStoreRuntime(), CellFactory.Attributes);
+                await cell2.load(services);
+
+                assert.equal(cell2.get(), undefined, "Could not load SharedCell from snapshot");
             });
         });
 

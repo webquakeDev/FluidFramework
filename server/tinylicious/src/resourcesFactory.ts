@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -7,11 +7,11 @@ import fs from "fs";
 import { LocalOrdererManager } from "@fluidframework/server-local-server";
 import { DocumentStorage } from "@fluidframework/server-services-shared";
 import { generateToken, Historian } from "@fluidframework/server-services-client";
-import { MongoDatabaseManager, MongoManager } from "@fluidframework/server-services-core";
+import { MongoDatabaseManager, MongoManager, IResourcesFactory } from "@fluidframework/server-services-core";
 import * as utils from "@fluidframework/server-services-utils";
 import * as git from "isomorphic-git";
 import { Provider } from "nconf";
-import socketIo from "socket.io";
+import { Server } from "socket.io";
 
 import winston from "winston";
 import { TinyliciousResources } from "./resources";
@@ -23,10 +23,12 @@ import {
     WebServerFactory,
 } from "./services";
 
-export class TinyliciousResourcesFactory implements utils.IResourcesFactory<TinyliciousResources> {
+const defaultTinyliciousPort = 7070;
+
+export class TinyliciousResourcesFactory implements IResourcesFactory<TinyliciousResources> {
     public async create(config: Provider): Promise<TinyliciousResources> {
         // Pull in the default port off the config
-        const port = utils.normalizePort(process.env.PORT || "3000");
+        const port = utils.normalizePort(process.env.PORT ?? defaultTinyliciousPort);
         const collectionNames = config.get("mongo:collectionNames");
 
         const tenantManager = new TenantManager(`http://localhost:${port}`);
@@ -39,8 +41,12 @@ export class TinyliciousResourcesFactory implements utils.IResourcesFactory<Tiny
             collectionNames.documents,
             collectionNames.deltas,
             collectionNames.scribeDeltas);
-        const storage = new DocumentStorage(databaseManager, tenantManager);
-        const io = socketIo();
+        const storage = new DocumentStorage(databaseManager, tenantManager, false);
+        const io = new Server({
+            // enable compatibility with socket.io v2 clients
+            // https://socket.io/docs/v4/client-installation/
+            allowEIO3: true,
+        });
         const pubsub = new PubSubPublisher(io);
         const webServerFactory = new WebServerFactory(io);
 

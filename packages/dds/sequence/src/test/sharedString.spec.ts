@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -12,7 +12,6 @@ import {
     reservedMarkerIdKey,
     reservedMarkerSimpleTypeKey,
     reservedTileLabelsKey,
-    SnapshotLegacy,
 } from "@fluidframework/merge-tree";
 import {
     MockFluidDataStoreRuntime,
@@ -59,15 +58,13 @@ describe("SharedString", () => {
         function verifyAndReturnSummaryTree(): ISummaryTree {
             const summarizeResult = sharedString.summarize();
             const summaryObjectKeys = Object.keys(summarizeResult.summary.tree);
-            assert.strictEqual(summaryObjectKeys.length, 2, "summary should have two entries");
-            assert.strictEqual(summaryObjectKeys[0], "header", "header not present in summary");
-            assert.strictEqual(summaryObjectKeys[1], "content", "content not present in summary");
+            assert.strictEqual(summaryObjectKeys.length, 1, "summary should have one entries");
+            assert.strictEqual(summaryObjectKeys[0], "content", "content not present in summary");
 
             const subTree = summarizeResult.summary.tree.content as ISummaryTree;
             const subTreeObjectKeys = Object.keys(subTree.tree);
-            assert.strictEqual(subTreeObjectKeys.length, 2, "sub tree should have two entries");
+            assert.strictEqual(subTreeObjectKeys.length, 1, "sub tree should have one entries");
             assert.strictEqual(subTreeObjectKeys[0], "header", "header not present in sub tree");
-            assert.strictEqual(subTreeObjectKeys[1], SnapshotLegacy.catchupOps, "catchupOps not present in sub tree");
 
             return summarizeResult.summary;
         }

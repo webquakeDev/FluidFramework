@@ -1,17 +1,17 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { IBlob, ICreateBlobParams, ICreateBlobResponse } from "@fluidframework/gitresources";
 import { Router } from "express";
-import * as nconf from "nconf";
+import nconf from "nconf";
 import * as utils from "../../utils";
 
 /**
  * Validates that the input encoding is valid
  */
-function validateEncoding(encoding: string): encoding is BufferEncoding {
+function validateEncoding(encoding: BufferEncoding): boolean {
     return encoding === "utf-8" || encoding === "base64";
 }
 
@@ -37,6 +37,7 @@ export async function createBlob(
     repo: string,
     blob: ICreateBlobParams): Promise<ICreateBlobResponse> {
         if (!blob || !validateBlob(blob.content) || !validateEncoding(blob.encoding)) {
+            // eslint-disable-next-line prefer-promise-reject-errors
             return Promise.reject("Invalid blob");
     }
 

@@ -1,14 +1,12 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { assert } from "@fluidframework/common-utils";
 import {
-    IBlob,
     ISequencedDocumentMessage,
     ISummaryProposal,
-    ITree,
     MessageType,
     TreeEntry,
 } from "@fluidframework/protocol-definitions";
@@ -482,63 +480,76 @@ function processOp(
     let recorded = false;
     if (isRuntimeMessage(message)) {
         const runtimeMessage = unpackRuntimeMessage(message);
-        if (runtimeMessage.type === ContainerMessageType.Attach) {
-            const attachMessage = runtimeMessage.contents as IAttachMessage;
-            processDataStoreAttachOp(attachMessage, dataType);
-        } else {
-            let envelop = runtimeMessage.contents as IEnvelope;
-            // TODO: Legacy?
-            if (envelop && typeof envelop === "string") {
-                envelop = JSON.parse(envelop);
+        switch (runtimeMessage.type) {
+            case ContainerMessageType.Attach: {
+                const attachMessage = runtimeMessage.contents as IAttachMessage;
+                processDataStoreAttachOp(attachMessage, dataType);
+                break;
             }
-            const innerContent = envelop.contents as {
-                content: any;
-                type: string;
-            };
-            const address = envelop.address;
-            type = `${type}/${innerContent.type}`;
-            if (innerContent.type === DataStoreMessageType.Attach) {
-                const attachMessage = innerContent.content as IAttachMessage;
-                let objectType = attachMessage.type;
-                if (objectType.startsWith(objectTypePrefix)) {
-                    objectType = objectType.substring(objectTypePrefix.length);
+            // skip for now because these ops do not have contents
+            case ContainerMessageType.BlobAttach: {
+                break;
+            }
+            default: {
+                let envelope = runtimeMessage.contents as IEnvelope;
+                // TODO: Legacy?
+                if (envelope && typeof envelope === "string") {
+                    envelope = JSON.parse(envelope);
                 }
-                dataType.set(getObjectId(address, attachMessage.id), objectType);
-            } else if (innerContent.type === DataStoreMessageType.ChannelOp) {
-                const innerEnvelop = innerContent.content as IEnvelope;
-                const innerContent2 = innerEnvelop.contents as {
-                    type?: string;
-                    value?: any;
+                const innerContent = envelope.contents as {
+                    content: any;
+                    type: string;
                 };
+                const address = envelope.address;
+                type = `${type}/${innerContent.type}`;
+                switch (innerContent.type) {
+                    case DataStoreMessageType.Attach: {
+                        const attachMessage = innerContent.content as IAttachMessage;
+                        let objectType = attachMessage.type;
+                        if (objectType.startsWith(objectTypePrefix)) {
+                            objectType = objectType.substring(objectTypePrefix.length);
+                        }
+                        dataType.set(getObjectId(address, attachMessage.id), objectType);
+                        break;
+                    }
+                    case DataStoreMessageType.ChannelOp:
+                    default: {
+                        const innerEnvelope = innerContent.content as IEnvelope;
+                        const innerContent2 = innerEnvelope.contents as {
+                            type?: string;
+                            value?: any;
+                        };
 
-                const objectId = getObjectId(address, innerEnvelop.address);
-                incr(objectStats, objectId, msgSize);
-                let objectType = dataType.get(objectId);
-                if (objectType === undefined) {
-                    // Somehow we do not have data...
-                    dataType.set(objectId, objectId);
-                    objectType = objectId;
-                }
-                incr(dataTypeStats, objectType, msgSize);
-                recorded = true;
+                        const objectId = getObjectId(address, innerEnvelope.address);
+                        incr(objectStats, objectId, msgSize);
+                        let objectType = dataType.get(objectId);
+                        if (objectType === undefined) {
+                            // Somehow we do not have data...
+                            dataType.set(objectId, objectId);
+                            objectType = objectId;
+                        }
+                        incr(dataTypeStats, objectType, msgSize);
+                        recorded = true;
 
-                let subType = innerContent2.type;
-                if (innerContent2.type === "set" &&
-                    typeof innerContent2.value === "object" &&
-                    innerContent2.value !== null) {
-                    type = `${type}/${subType}`;
-                    subType = innerContent2.value.type;
-                } else if (objectType === "mergeTree" && subType !== undefined) {
-                    const types = ["insert", "remove", "annotate", "group"];
-                    if (types[subType]) {
-                        subType = types[subType];
+                        let subType = innerContent2.type;
+                        if (innerContent2.type === "set" &&
+                            typeof innerContent2.value === "object" &&
+                            innerContent2.value !== null) {
+                            type = `${type}/${subType}`;
+                            subType = innerContent2.value.type;
+                        } else if (objectType === "mergeTree" && subType !== undefined) {
+                            const types = ["insert", "remove", "annotate", "group"];
+                            if (types[subType]) {
+                                subType = types[subType];
+                            }
+                        }
+                        if (subType !== undefined) {
+                            type = `${type}/${subType}`;
+                        }
+
+                        type = `${type} (${objectType})`;
                     }
                 }
-                if (subType !== undefined) {
-                    type = `${type}/${subType}`;
-                }
-
-                type = `${type} (${objectType})`;
             }
         }
     }
@@ -571,9 +582,9 @@ function processDataStoreAttachOp(
     }
     for (const entry of parsedAttachMessage.snapshot.entries) {
         if (entry.type === TreeEntry.Tree) {
-            for (const entry2 of (entry.value as ITree).entries) {
+            for (const entry2 of entry.value.entries) {
                 if (entry2.path === ".attributes" && entry2.type === TreeEntry.Blob) {
-                    const attrib = JSON.parse((entry2.value as IBlob).contents);
+                    const attrib = JSON.parse(entry2.value.contents);
                     let objectType = attrib.type;
                     if (objectType.startsWith(objectTypePrefix)) {
                         objectType = objectType.substring(objectTypePrefix.length);
@@ -650,7 +661,7 @@ function processQuorumMessages(
         const clientId = JSON.parse(dataString);
         session = sessionsInProgress.get(clientId);
         sessionsInProgress.delete(clientId);
-        assert(!!session);
+        assert(!!session, 0x1b7 /* "Bad session state for processing quorum messages" */);
         if (session) {
             if (!skipMessage) {
                 session.reportOp(message.timestamp);
@@ -667,7 +678,7 @@ function processQuorumMessages(
         session = sessionsInProgress.get(message.clientId);
         if (session === undefined) {
             session = sessionsInProgress.get(noClientName);
-            assert(!!session);
+            assert(!!session, 0x1b8 /* "Bad session state for processing quorum messages" */);
         }
     }
     return session;

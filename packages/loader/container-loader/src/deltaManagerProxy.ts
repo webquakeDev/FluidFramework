@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -9,6 +9,7 @@ import {
     IDeltaQueue,
     IDeltaSender,
     IDeltaQueueEvents,
+    ReadOnlyInfo,
 } from "@fluidframework/container-definitions";
 import { EventForwarder } from "@fluidframework/common-utils";
 import {
@@ -17,7 +18,6 @@ import {
     IDocumentMessage,
     ISequencedDocumentMessage,
     ISignalMessage,
-    MessageType,
 } from "@fluidframework/protocol-definitions";
 
 /**
@@ -48,6 +48,7 @@ export class DeltaQueueProxy<T> extends EventForwarder<IDeltaQueueEvents<T>> imp
         return this.queue.toArray();
     }
 
+    // back-compat: usage removed in 0.33, remove in future versions
     public async systemPause(): Promise<void> {
         return this.pause();
     }
@@ -56,12 +57,17 @@ export class DeltaQueueProxy<T> extends EventForwarder<IDeltaQueueEvents<T>> imp
         return this.queue.pause();
     }
 
+    // back-compat: usage removed in 0.33, remove in future versions
     public async systemResume(): Promise<void> {
         return this.resume();
     }
 
     public async resume(): Promise<void> {
         this.queue.resume();
+    }
+
+    public async waitTillProcessingDone() {
+        return this.queue.waitTillProcessingDone();
     }
 }
 
@@ -87,13 +93,12 @@ export class DeltaManagerProxy
         return this.deltaManager.lastSequenceNumber;
     }
 
-    public get lastKnownSeqNumber() {
-        return this.deltaManager.lastKnownSeqNumber;
+    public get lastMessage() {
+        return this.deltaManager.lastMessage;
     }
 
-    // Back-compat: <= 0.18
-    public get referenceSequenceNumber(): number {
-        return this.lastSequenceNumber;
+    public get lastKnownSeqNumber() {
+        return this.deltaManager.lastKnownSeqNumber;
     }
 
     public get initialSequenceNumber(): number {
@@ -128,6 +133,10 @@ export class DeltaManagerProxy
         return this.deltaManager.readonly;
     }
 
+    public get readOnlyInfo(): ReadOnlyInfo {
+        return this.deltaManager.readOnlyInfo;
+    }
+
     constructor(private readonly deltaManager: IDeltaManager<ISequencedDocumentMessage, IDocumentMessage>) {
         super(deltaManager);
 
@@ -149,10 +158,6 @@ export class DeltaManagerProxy
 
     public submitSignal(content: any): void {
         return this.deltaManager.submitSignal(content);
-    }
-
-    public submit(type: MessageType, contents: any, batch: boolean, appData: any): number {
-        return this.deltaManager.submit(type, contents, batch, appData);
     }
 
     public flush(): void {

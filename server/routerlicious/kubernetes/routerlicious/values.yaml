@@ -17,11 +17,27 @@ alfred:
   key: jwt_key
   maxNumberOfClientsPerDocument: 1000000
   throttling:
-    maxRequestsPerMs: 1000000
-    maxRequestBurst: 1000000
-    minCooldownIntervalInMs: 1000000
-    minThrottleIntervalInMs: 1000000
-
+    restCalls:
+        maxPerMs: 1000000
+        maxBurst: 1000000
+        minCooldownIntervalInMs: 1000000
+        minThrottleIntervalInMs: 1000000
+    socketConnections:
+        maxPerMs: 1000000
+        maxBurst: 1000000
+        minCooldownIntervalInMs: 1000000
+        minThrottleIntervalInMs: 1000000
+    submitOps:
+        maxPerMs: 1000000
+        maxBurst: 1000000
+        minCooldownIntervalInMs: 1000000
+        minThrottleIntervalInMs: 1000000
+  socketIoAdapter:
+    enableCustomSocketIoAdapter: true
+    shouldDisableDefaultNamespace: false
+  enforceServerGeneratedDocumentId: false
+storage:
+  enableWholeSummaryUpload: false
 deli:
   name: deli
   replicas: 8
@@ -54,6 +70,12 @@ zookeeper:
 mongodb:
   url: mongodb_url
   expireAfterSeconds: -1
+  createCosmosDBIndexes: false
+  softDeletionRetentionPeriodMs: 2592000000
+  offlineWindowMs: 86400000
+  softDeletionEnabled: false
+  permanentDeletionEnabled: false
+  deletionIntervalMs: 3600000
 
 rabbitmq:
   connectionString: ""
@@ -68,11 +90,17 @@ redis2:
   port: 6379
   tls: false
 
+redisForThrottling:
+  url: redis_url
+  port: 6379
+  tls: false
+
 kafka:
   topics:
     rawdeltas: rawdeltas
     deltas: deltas
   url: kafka_url:port
+  libname: rdkafka
 
 ingress:
   class: nginx-prod

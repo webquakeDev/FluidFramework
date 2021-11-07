@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -54,13 +54,52 @@ describe("Map", () => {
 
             it("should fire correct map events", async () => {
                 const dummyMap = map;
-                let called1: boolean = false;
-                let called2: boolean = false;
-                dummyMap.on("op", (agr1, arg2, arg3) => called1 = true);
-                dummyMap.on("valueChanged", (agr1, arg2, arg3, arg4) => called2 = true);
+                let valueChangedExpected = true;
+                let clearExpected = false;
+                let previousValue: any;
+
+                dummyMap.on("op", (arg1, arg2, arg3) => {
+                    assert.fail("shouldn't receive an op event");
+                });
+                dummyMap.on("valueChanged", (changed, local, op, target) => {
+                    assert.equal(valueChangedExpected, true, "valueChange event not expected");
+                    valueChangedExpected = false;
+
+                    assert.equal(changed.key, "marco");
+                    assert.equal(changed.previousValue, previousValue);
+
+                    assert.equal(local, true, "local should be true for local action for valueChanged event");
+                    assert.equal(op, undefined, "op should be undefined for local actions for valueChanged event");
+                    assert.equal(target, dummyMap, "target should be the map for valueChanged event");
+                });
+                dummyMap.on("clear", (local, op, target) => {
+                    assert.equal(clearExpected, true, "clear event not expected");
+                    clearExpected = false;
+
+                    assert.equal(local, true, "local should be true for local action  for clear event");
+                    assert.equal(op, undefined, "op should be undefined for local actions for clear event");
+                    assert.equal(target, dummyMap, "target should be the map for clear event");
+                });
+                dummyMap.on("error", (error) => {
+                    // propagate error in the event handlers
+                    throw error;
+                });
+
+                // Test set
+                previousValue = undefined;
                 dummyMap.set("marco", "polo");
-                assert.equal(called1, false, "did not receive op event");
-                assert.equal(called2, true, "did not receive valueChanged event");
+                assert.equal(valueChangedExpected, false, "missing valueChanged event");
+
+                // Test delete
+                previousValue = "polo";
+                valueChangedExpected = true;
+                dummyMap.delete("marco");
+                assert.equal(valueChangedExpected, false, "missing valueChanged event");
+
+                // Test clear
+                clearExpected = true;
+                dummyMap.clear();
+                assert.equal(clearExpected, false, "missing clear event");
             });
 
             it("Should return undefined when a key does not exist in the map", () => {
@@ -85,17 +124,10 @@ describe("Map", () => {
                 const subMap = createLocalMap("subMap");
                 map.set("object", subMap.handle);
 
-                const parsed = map.getSerializableStorage();
-
-                map.forEach((value, key) => {
-                    if (!value.IFluidHandle) {
-                        assert.equal(parsed[key].type, "Plain");
-                        assert.equal(parsed[key].value, value);
-                    } else {
-                        assert.equal(parsed[key].type, "Plain");
-                        assert.equal(parsed[key].value.url, subMap.handle.absolutePath);
-                    }
-                });
+                const summaryContent = (map.summarize().summary.tree.header as ISummaryBlob).content;
+                const subMapHandleUrl = subMap.handle.absolutePath;
+                // eslint-disable-next-line max-len
+                assert.equal(summaryContent, `{"blobs":[],"content":{"first":{"type":"Plain","value":"second"},"third":{"type":"Plain","value":"fourth"},"fifth":{"type":"Plain","value":"sixth"},"object":{"type":"Plain","value":{"type":"__fluid_handle__","url":"${subMapHandleUrl}"}}}}`);
             });
 
             it("Should serialize an undefined value", () => {
@@ -106,17 +138,10 @@ describe("Map", () => {
                 const subMap = createLocalMap("subMap");
                 map.set("object", subMap.handle);
 
-                const parsed = map.getSerializableStorage();
-
-                map.forEach((value, key) => {
-                    if (!value || !value.IFluidHandle) {
-                        assert.equal(parsed[key].type, "Plain");
-                        assert.equal(parsed[key].value, value);
-                    } else {
-                        assert.equal(parsed[key].type, "Plain");
-                        assert.equal(parsed[key].value.url, subMap.handle.absolutePath);
-                    }
-                });
+                const summaryContent = (map.summarize().summary.tree.header as ISummaryBlob).content;
+                const subMapHandleUrl = subMap.handle.absolutePath;
+                // eslint-disable-next-line max-len
+                assert.equal(summaryContent, `{"blobs":[],"content":{"first":{"type":"Plain","value":"second"},"third":{"type":"Plain","value":"fourth"},"fifth":{"type":"Plain"},"object":{"type":"Plain","value":{"type":"__fluid_handle__","url":"${subMapHandleUrl}"}}}}`);
             });
 
             it("Should serialize an object with nested handles", async () => {
@@ -132,9 +157,9 @@ describe("Map", () => {
 
                 const subMapHandleUrl = subMap.handle.absolutePath;
                 const subMap2HandleUrl = subMap2.handle.absolutePath;
-                const serialized = JSON.stringify(map.getSerializableStorage());
+                const summaryContent = (map.summarize().summary.tree.header as ISummaryBlob).content;
                 // eslint-disable-next-line max-len
-                assert.equal(serialized, `{"object":{"type":"Plain","value":{"subMapHandle":{"type":"__fluid_handle__","url":"${subMapHandleUrl}"},"nestedObj":{"subMap2Handle":{"type":"__fluid_handle__","url":"${subMap2HandleUrl}"}}}}}`);
+                assert.equal(summaryContent, `{"blobs":[],"content":{"object":{"type":"Plain","value":{"subMapHandle":{"type":"__fluid_handle__","url":"${subMapHandleUrl}"},"nestedObj":{"subMap2Handle":{"type":"__fluid_handle__","url":"${subMap2HandleUrl}"}}}}}}`);
             });
 
             it("can load old serialization format", async () => {
@@ -363,11 +388,13 @@ describe("Map", () => {
 
                     // Verify the local SharedMap
                     const localSubMap = map1.get<IFluidHandle>("test");
+                    assert(localSubMap);
                     assert.equal(
                         localSubMap.absolutePath, subMap.handle.absolutePath, "could not get the handle's path");
 
                     // Verify the remote SharedMap
                     const remoteSubMap = map2.get<IFluidHandle>("test");
+                    assert(remoteSubMap);
                     assert.equal(
                         remoteSubMap.absolutePath,
                         subMap.handle.absolutePath,

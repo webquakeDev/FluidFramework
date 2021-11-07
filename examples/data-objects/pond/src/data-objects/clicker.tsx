@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -10,6 +10,7 @@ import { ISharedMap, SharedMap } from "@fluidframework/map";
 import { IFluidHTMLView } from "@fluidframework/view-interfaces";
 import React from "react";
 import ReactDOM from "react-dom";
+import { IEvent } from "@fluidframework/common-definitions";
 
 const storedMapKey = "storedMap";
 const counter1Key = "counter";
@@ -45,11 +46,11 @@ export class Clicker extends DataObject implements IFluidHTMLView {
 
     protected async hasInitialized() {
         const counter1Handle = this.root.get<IFluidHandle<SharedCounter>>(counter1Key);
-        this.counter1 = await counter1Handle.get();
+        this.counter1 = await counter1Handle?.get();
 
-        const storedMap = await this.root.get<IFluidHandle<ISharedMap>>(storedMapKey).get();
-        const counter2Handle = storedMap.get<IFluidHandle<SharedCounter>>(counter2Key);
-        this.counter2 = await counter2Handle.get();
+        const storedMap = await this.root.get<IFluidHandle<ISharedMap>>(storedMapKey)?.get();
+        const counter2Handle = storedMap?.get<IFluidHandle<SharedCounter>>(counter2Key);
+        this.counter2 = await counter2Handle?.get();
     }
 
     // start IFluidHTMLView
@@ -72,7 +73,7 @@ export class Clicker extends DataObject implements IFluidHTMLView {
 
     public static getFactory() { return Clicker.factory; }
 
-    private static readonly factory = new DataObjectFactory(
+    private static readonly factory = new DataObjectFactory<Clicker, undefined, undefined, IEvent>(
         Clicker.ComponentName,
         Clicker,
         [

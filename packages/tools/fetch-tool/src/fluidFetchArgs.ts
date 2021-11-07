@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -11,8 +11,11 @@ export let dumpMessageStats = false;
 export let dumpSnapshotStats = false;
 export let dumpSnapshotTrees = false;
 export let dumpSnapshotVersions = false;
+export let overWrite = false;
 export let paramSnapshotVersionIndex: number | undefined;
 export let paramNumSnapshotVersions = 10;
+export let paramUnpackAggregatedBlobs = true;
+export let paramActualFormatting = false;
 
 let paramForceTokenReauth = false;
 
@@ -47,6 +50,8 @@ const optionsArray =
         ["--filter:messageType <type>", "filter message by <type>"],
         ["--jwt <token>", "token to be used for routerlicious URLs"],
         ["--numSnapshotVersions <number>", "Number of versions to load (default:10)"],
+        ["--noUnpack", "Do not unpack aggregated blobs"],
+        ["--actualPayload", "Do not format json payloads nicely, preserve actual bytes / formatting in storage"],
         ["--saveDir <outdir>", "Save data of the snapshots and messages"],
         ["--snapshotVersionIndex <number>", "Index of the version to dump"],
         ["--websocket", "Connect to web socket to download initial messages"],
@@ -62,12 +67,35 @@ export function printUsage() {
     }
 }
 
+// Can be used in unit test to pass in customized argument values
+// More argument options can be added when needed
+export function setArguments(values: {
+    saveDir: string,
+    paramURL: string
+    dumpMessages?: boolean,
+    dumpMessageStats?: boolean,
+    dumpSnapshotStats?: boolean,
+    dumpSnapshotTrees?: boolean,
+    overWrite?: boolean }) {
+    paramSaveDir = values.saveDir;
+    paramURL = values.paramURL;
+    dumpMessages = values.dumpMessages ?? dumpMessages;
+    dumpMessageStats = values.dumpMessageStats ?? dumpMessageStats;
+    dumpSnapshotStats = values.dumpSnapshotStats ?? dumpSnapshotStats;
+    dumpSnapshotTrees = values.dumpSnapshotTrees ?? dumpSnapshotTrees;
+    overWrite = values.overWrite ?? overWrite;
+}
+
 export function parseArguments() {
     for (let i = 2; i < process.argv.length; i++) {
         const arg = process.argv[i];
         switch (arg) {
             case "--dump:rawmessage":
                 dumpMessages = true;
+                break;
+            case "--dump:rawmessage:overwrite":
+                dumpMessages = true;
+                overWrite = true;
                 break;
             case "--stat:message":
                 dumpMessageStats = true;
@@ -102,6 +130,12 @@ export function parseArguments() {
                 break;
             case "--numSnapshotVersions":
                 paramNumSnapshotVersions = parseIntArg(i++, "number of versions", false);
+                break;
+            case "--noUnpack":
+                paramUnpackAggregatedBlobs = false;
+                break;
+            case "--actualPayload":
+                paramActualFormatting = true;
                 break;
             case "--saveDir":
                 paramSaveDir = parseStrArg(i++, "save data path");

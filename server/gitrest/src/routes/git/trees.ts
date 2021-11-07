@@ -1,11 +1,11 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { ICreateTreeParams, ITree, ITreeEntry } from "@fluidframework/gitresources";
 import { Router } from "express";
-import * as nconf from "nconf";
+import nconf from "nconf";
 import git from "nodegit";
 import * as utils from "../../utils";
 
@@ -64,7 +64,7 @@ async function getTree(repoManager: utils.RepositoryManager, owner: string, repo
     return getTreeInternal(repository, sha);
 }
 
-async function getTreeRecursive(
+export async function getTreeRecursive(
     repoManager: utils.RepositoryManager,
     owner: string,
     repo: string,

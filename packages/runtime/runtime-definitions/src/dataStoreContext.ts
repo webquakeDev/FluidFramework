@@ -1,9 +1,9 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import { ITelemetryLogger, IDisposable, IEvent, IEventProvider } from "@fluidframework/common-definitions";
+import { ITelemetryBaseLogger, IDisposable, IEvent, IEventProvider } from "@fluidframework/common-definitions";
 import {
     IFluidObject,
     IFluidRouter,
@@ -16,7 +16,6 @@ import {
     IAudience,
     IDeltaManager,
     ContainerWarning,
-    ILoader,
     AttachState,
     ILoaderOptions,
 } from "@fluidframework/container-definitions";
@@ -34,34 +33,31 @@ import { IGarbageCollectionData, IGarbageCollectionSummaryDetails } from "./garb
 import { IInboundSignalMessage } from "./protocol";
 import {
     CreateChildSummarizerNodeParam,
-    IChannelSummarizeResult,
     ISummarizerNodeWithGC,
+    ISummaryTreeWithStats,
     SummarizeInternalFn,
 } from "./summary";
-import { ITaskManager } from "./agent";
 
 /**
  * Runtime flush mode handling
  */
 export enum FlushMode {
     /**
-     * In automatic flush mode the runtime will immediately send all operations to the driver layer.
+     * In Immediate flush mode the runtime will immediately send all operations to the driver layer.
      */
-    Automatic,
+    Immediate,
 
     /**
-     * When in manual flush mode the runtime will buffer operations in the current turn and send them as a single
+     * When in TurnBased flush mode the runtime will buffer operations in the current turn and send them as a single
      * batch at the end of the turn. The flush call on the runtime can be used to force send the current batch.
      */
-    Manual,
+    TurnBased,
 }
 
 export interface IContainerRuntimeBaseEvents extends IEvent{
-
     (event: "batchBegin" | "op", listener: (op: ISequencedDocumentMessage) => void);
     (event: "batchEnd", listener: (error: any, op: ISequencedDocumentMessage) => void);
     (event: "signal", listener: (message: IInboundSignalMessage, local: boolean) => void);
-    (event: "leader" | "notleader", listener: () => void);
 }
 
 /**
@@ -70,10 +66,9 @@ export interface IContainerRuntimeBaseEvents extends IEvent{
  */
 export interface IContainerRuntimeBase extends
     IEventProvider<IContainerRuntimeBaseEvents>,
-    IProvideFluidHandleContext
-{
+    IProvideFluidHandleContext {
 
-    readonly logger: ITelemetryLogger;
+    readonly logger: ITelemetryBaseLogger;
     readonly clientDetails: IClientDetails;
 
     /**
@@ -103,7 +98,12 @@ export interface IContainerRuntimeBase extends
      * @deprecated 0.16 Issue #1537, #3631
      * @internal
      */
-    _createDataStoreWithProps(pkg: string | string[], props?: any, id?: string): Promise<IFluidRouter>;
+    _createDataStoreWithProps(
+        pkg: string | string[],
+        props?: any,
+        id?: string,
+        isRoot?: boolean,
+    ): Promise<IFluidRouter>;
 
     /**
      * Creates data store. Returns router of data store. Data store is not bound to container,
@@ -126,8 +126,6 @@ export interface IContainerRuntimeBase extends
      * @param relativeUrl - A relative request within the container
      */
     getAbsoluteUrl(relativeUrl: string): Promise<string | undefined>;
-
-    getTaskManager(): Promise<ITaskManager>;
 
     uploadBlob(blob: ArrayBufferLike): Promise<IFluidHandle<ArrayBufferLike>>;
 
@@ -155,20 +153,27 @@ export interface IFluidDataStoreChannel extends
     readonly id: string;
 
     /**
-     * Indicates the attachment state of the data store to a host service.
+     * Indicates the attachment state of the channel to a host service.
      */
     readonly attachState: AttachState;
 
     /**
+     * @deprecated - This is an internal method that should not be exposed. attachGraph() should instead be called
+     * to bind the runtime to the container and attach any bound handles.
      * Called to bind the runtime to the container.
      * If the container is not attached to storage, then this would also be unknown to other clients.
      */
     bindToContext(): void;
 
     /**
+     * Runs through the graph and attaches the bound handles. Then binds this runtime to the container.
+     */
+    attachGraph(): void;
+
+    /**
      * Retrieves the summary used as part of the initial summary message
      */
-    getAttachSummary(): IChannelSummarizeResult;
+    getAttachSummary(): ISummaryTreeWithStats;
 
     /**
      * Processes the op.
@@ -181,18 +186,27 @@ export interface IFluidDataStoreChannel extends
     processSignal(message: any, local: boolean): void;
 
     /**
-     * Generates a summary for the data store.
+     * Generates a summary for the channel.
      * Introduced with summarizerNode - will be required in a future release.
      * @param fullTree - true to bypass optimizations and force a full summary tree.
      * @param trackState - This tells whether we should track state from this summary.
      */
-    summarize(fullTree?: boolean, trackState?: boolean): Promise<IChannelSummarizeResult>;
+    summarize(fullTree?: boolean, trackState?: boolean): Promise<ISummaryTreeWithStats>;
 
     /**
-     * Returns the GC data for this data store. It contains a list of GC nodes that contains references to
-     * other GC nodes.
+     * Returns the data used for garbage collection. This includes a list of GC nodes that represent this context
+     * including any of its children. Each node has a list of outbound routes to other GC nodes in the document.
+     * @param fullGC - true to bypass optimizations and force full generation of GC data.
      */
-    getGCData(): Promise<IGarbageCollectionData>;
+    getGCData(fullGC?: boolean): Promise<IGarbageCollectionData>;
+
+    /**
+     * After GC has run, called to notify this channel of routes that are used in it.
+     * @param usedRoutes - The routes that are used in this channel.
+     * @param gcTimestamp - The time when GC was run that generated these used routes. If any node becomes unreferenced
+     * as part of this GC run, this should be used to update the time when it happens.
+     */
+    updateUsedRoutes(usedRoutes: string[], gcTimestamp?: number): void;
 
     /**
      * Notifies this object about changes in the connection state.
@@ -209,17 +223,19 @@ export interface IFluidDataStoreChannel extends
      * @param localOpMetadata - The local metadata associated with the original message.
      */
     reSubmit(type: string, content: any, localOpMetadata: unknown);
+
+    applyStashedOp(content: any): Promise<unknown>;
 }
 
 export type CreateChildSummarizerNodeFn = (
     summarizeInternal: SummarizeInternalFn,
-    getGCDataFn: () => Promise<IGarbageCollectionData>,
+    getGCDataFn: (fullGC?: boolean) => Promise<IGarbageCollectionData>,
     getInitialGCSummaryDetailsFn: () => Promise<IGarbageCollectionSummaryDetails>,
-    usedRoutes: string[],
 ) => ISummarizerNodeWithGC;
 
 export interface IFluidDataStoreContextEvents extends IEvent {
-    (event: "leader" | "notleader" | "attaching" | "attached", listener: () => void);
+    // eslint-disable-next-line @typescript-eslint/unified-signatures
+    (event: "attaching" | "attached", listener: () => void);
 }
 
 /**
@@ -227,8 +243,9 @@ export interface IFluidDataStoreContextEvents extends IEvent {
  * get information and call functionality to the container.
  */
 export interface IFluidDataStoreContext extends
-IEventProvider<IFluidDataStoreContextEvents>, Partial<IProvideFluidDataStoreRegistry> {
-    readonly documentId: string;
+    IEventProvider<IFluidDataStoreContextEvents>,
+    Partial<IProvideFluidDataStoreRegistry>,
+    IProvideFluidHandleContext {
     readonly id: string;
     /**
      * A data store created by a client, is a local data store for that client. Also, when a detached container loads
@@ -243,31 +260,20 @@ IEventProvider<IFluidDataStoreContextEvents>, Partial<IProvideFluidDataStoreRegi
      * The package path of the data store as per the package factory.
      */
     readonly packagePath: readonly string[];
-    /**
-     * TODO: should remove after detachedNew is in place
-     */
-    readonly existing: boolean;
     readonly options: ILoaderOptions;
     readonly clientId: string | undefined;
     readonly connected: boolean;
-    readonly leader: boolean;
     readonly deltaManager: IDeltaManager<ISequencedDocumentMessage, IDocumentMessage>;
     readonly storage: IDocumentStorageService;
-    readonly branch: string;
     readonly baseSnapshot: ISnapshotTree | undefined;
-    readonly loader: ILoader;
+    readonly logger: ITelemetryBaseLogger;
+    readonly clientDetails: IClientDetails;
     /**
      * Indicates the attachment state of the data store to a host service.
      */
     readonly attachState: AttachState;
 
     readonly containerRuntime: IContainerRuntimeBase;
-    /**
-     * @deprecated 0.17 Issue #1888 Rename IHostRuntime to IContainerRuntime and refactor usages
-     * Use containerRuntime instead of hostRuntime
-     */
-    readonly hostRuntime: IContainerRuntimeBase;
-    readonly snapshotFn: (message: string) => Promise<void>;
 
     /**
      * @deprecated 0.16 Issue #1635, #3631
@@ -343,6 +349,12 @@ IEventProvider<IFluidDataStoreContextEvents>, Partial<IProvideFluidDataStoreRegi
     ): CreateChildSummarizerNodeFn;
 
     uploadBlob(blob: ArrayBufferLike): Promise<IFluidHandle<ArrayBufferLike>>;
+
+    /**
+     * Returns the GC details in the initial summary of this data store. This is used to initialize the data store
+     * and its children with the GC details from the previous summary.
+     */
+    getInitialGCSummaryDetails(): Promise<IGarbageCollectionSummaryDetails>;
 }
 
 export interface IFluidDataStoreContextDetached extends IFluidDataStoreContext {

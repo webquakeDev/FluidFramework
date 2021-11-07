@@ -1,14 +1,13 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 export * from "./interfaces";
-export * from "./baseTestObjectProvider";
+export * from "./testObjectProvider";
+export * from "./loaderContainerTracker";
 export * from "./localLoader";
 export * from "./localCodeLoader";
-export * from "./localTestObjectProvider";
-export * from "./opProcessingController";
 export * from "./testContainerRuntimeFactory";
 export * from "./testFluidObject";
-export * from "./tinyliciousTestObjectProvider";
+export * from "./timeoutUtils";

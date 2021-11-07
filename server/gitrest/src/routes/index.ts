@@ -1,10 +1,10 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { Router } from "express";
-import * as nconf from "nconf";
+import nconf from "nconf";
 import { IExternalStorageManager } from "../externalStorageManager";
 import * as utils from "../utils";
 /* eslint-disable import/no-internal-modules */
@@ -16,6 +16,7 @@ import * as tags from "./git/tags";
 import * as trees from "./git/trees";
 import * as repositoryCommits from "./repository/commits";
 import * as contents from "./repository/contents";
+import * as summaries from "./summaries";
 /* eslint-enable import/no-internal-modules */
 
 export interface IRoutes {
@@ -31,6 +32,7 @@ export interface IRoutes {
         commits: Router;
         contents: Router;
     };
+    summaries: Router;
 }
 
 export function create(
@@ -51,5 +53,6 @@ export function create(
             commits: repositoryCommits.create(store, repoManager, externalStorageManager),
             contents: contents.create(store, repoManager),
         },
+        summaries: summaries.create(store, repoManager, externalStorageManager),
     };
 }

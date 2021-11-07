@@ -1,19 +1,21 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { strict as assert } from "assert";
 import { ISequencedDocumentMessage } from "@fluidframework/protocol-definitions";
-import { MergeTree, MergeTreeDeltaType, MergeTreeMaintenanceType, TextSegment } from "../";
 import { LocalClientId, UnassignedSequenceNumber, UniversalSequenceNumber } from "../constants";
+import { MergeTree } from "../mergeTree";
+import { MergeTreeMaintenanceType } from "../mergeTreeDeltaCallback";
+import { MergeTreeDeltaType } from "../ops";
+import { TextSegment } from "../textSegment";
 import { countOperations } from "./testUtils";
 
 describe("MergeTree", () => {
     let mergeTree: MergeTree;
     const localClientId = 17;
     let currentSequenceNumber: number;
-    const branchId = 0;
     beforeEach(() => {
         mergeTree = new MergeTree();
         mergeTree.insertSegments(
@@ -27,8 +29,7 @@ describe("MergeTree", () => {
         mergeTree.startCollaboration(
             localClientId,
             /* minSeq: */ currentSequenceNumber,
-            /* currentSeq: */ currentSequenceNumber,
-            branchId);
+            /* currentSeq: */ currentSequenceNumber);
     });
 
     describe("markRangeRemoved", () => {
@@ -88,6 +89,7 @@ describe("MergeTree", () => {
                 [MergeTreeDeltaType.REMOVE]: 1,
                 [MergeTreeMaintenanceType.SPLIT]: 2,
                 [MergeTreeMaintenanceType.UNLINK]: 1,
+                [MergeTreeMaintenanceType.ACKNOWLEDGED]: 1,
             });
         });
 

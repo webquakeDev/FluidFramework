@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -26,7 +26,6 @@ import {
     ISummaryTree,
 } from "@fluidframework/protocol-definitions";
 import { ChildLogger } from "@fluidframework/telemetry-utils";
-import { debug } from "./debug";
 import { IOuterDocumentDeltaConnectionProxy } from "./innerDocumentDeltaConnection";
 
 const socketIOEvents = [
@@ -105,7 +104,6 @@ export class DocumentServiceFactoryProxy implements IDocumentServiceFactoryProxy
     }
 
     public async connected(): Promise<void> {
-        debug("IFrame Connection Succeeded");
         return;
     }
 
@@ -171,12 +169,6 @@ export class DocumentServiceFactoryProxy implements IDocumentServiceFactoryProxy
             getVersions: async (versionId: string | null, count: number) => {
                 return storage.getVersions(versionId, count);
             },
-            read: async (id) => {
-                return storage.read(id);
-            },
-            readString: async (id) => {
-                return storage.readString(id);
-            },
             write: async (root, parents, message, ref) => {
                 return storage.write(root, parents, message, ref);
             },
@@ -196,10 +188,10 @@ export class DocumentServiceFactoryProxy implements IDocumentServiceFactoryProxy
     }
 
     private getDeltaStorage(deltaStorage: IDocumentDeltaStorageService): IDocumentDeltaStorageService {
-        const get = Comlink.proxy(async (from?: number, to?: number) => deltaStorage.get(from, to));
+        const fetchMessages = Comlink.proxy(deltaStorage.fetchMessages.bind(deltaStorage));
 
         return {
-            get,
+            fetchMessages,
         };
     }
 
@@ -231,10 +223,8 @@ export class DocumentServiceFactoryProxy implements IDocumentServiceFactoryProxy
             get initialClients() { return deltaStream.initialClients; },
             get initialMessages() { return deltaStream.initialMessages; },
             get initialSignals() { return deltaStream.initialSignals; },
-            maxMessageSize: deltaStream.maxMessageSize,
+            maxMessageSize: deltaStream.serviceConfiguration.maxMessageSize,
             mode: deltaStream.mode,
-            // Back-compat, removal tracked with issue #4346
-            parentBranch: null,
             serviceConfiguration: deltaStream.serviceConfiguration,
             version: deltaStream.version,
             supportedVersions: ["^0.3.0", "^0.2.0", "^0.1.0"],

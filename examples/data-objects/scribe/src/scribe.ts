@@ -1,7 +1,9 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
+
+/* eslint-disable @typescript-eslint/no-non-null-assertion */
 
 import { EventEmitter } from "events";
 import { resolve } from "url";
@@ -14,17 +16,12 @@ import {
     IFluidCodeDetails,
 } from "@fluidframework/core-interfaces";
 import { FluidObjectHandle, mixinRequestHandler } from "@fluidframework/datastore";
-import {
-    IContainerContext,
-    IRuntime,
-    IRuntimeFactory,
-} from "@fluidframework/container-definitions";
+import { IContainerContext } from "@fluidframework/container-definitions";
 import { ContainerRuntime } from "@fluidframework/container-runtime";
 import { IDocumentFactory } from "@fluid-example/host-service-interfaces";
 import { ISharedMap, SharedMap } from "@fluidframework/map";
 import {
     IFluidDataStoreRuntime,
-    IChannelFactory,
 } from "@fluidframework/datastore-definitions";
 import {
     IFluidDataStoreContext,
@@ -36,6 +33,7 @@ import {
     buildRuntimeRequestHandler,
 } from "@fluidframework/request-handler";
 import { defaultFluidObjectRequestHandler, defaultRouteRequestHandler } from "@fluidframework/aqueduct";
+import { RuntimeFactoryHelper } from "@fluidframework/runtime-utils";
 import Axios from "axios";
 
 import * as scribe from "./tools-core";
@@ -63,7 +61,7 @@ async function downloadRawText(textUrl: string): Promise<string> {
     return result.data;
 }
 
-function updateProgressBar(progressBar: HTMLElement, progress: number) {
+function updateProgressBar(progressBar: HTMLElement, progress: number | undefined) {
     if (progress !== undefined) {
         progressBar.style.width = `${(100 * progress).toFixed(2)}%`;
         if (progress === 1) {
@@ -149,7 +147,7 @@ function handleFiles(
     };
 
     // Read the selected file
-    const file = files.item(0);
+    const file = files.item(0)!;
     reader.readAsText(file);
 }
 
@@ -202,7 +200,7 @@ function initialize(
         inputElement.addEventListener(
             "change",
             () => {
-                handleFiles(createButton, startButton, createDetails, inputElement.files);
+                handleFiles(createButton, startButton, createDetails, inputElement.files!);
             },
             false);
     } else {
@@ -213,7 +211,8 @@ function initialize(
         });
     }
 
-    const documentFactory: IDocumentFactory = context.scope ? context.scope.IDocumentFactory : undefined;
+    const documentFactory: IDocumentFactory | undefined = context.scope ?
+        context.scope.IDocumentFactory : undefined;
     if (documentFactory) {
         createButton.classList.remove("hidden");
     } else {
@@ -232,7 +231,7 @@ function initialize(
             },
             package: `@fluid-example/shared-text@${version}`,
         };
-        const createP = documentFactory.create(details);
+        const createP = documentFactory!.create(details);
         createP.then(
             (createUrl) => {
                 url = createUrl;
@@ -276,9 +275,13 @@ function initialize(
             }
             typingDetails.classList.remove("hidden");
 
+            if (context.scope.ILoader === undefined) {
+                throw new Error("scope must contain ILoader");
+            }
+
             // Start typing and register to update the UI
             const typeP = scribe.type(
-                context.loader,
+                context.scope.ILoader,
                 url,
                 root,
                 runtime,
@@ -292,7 +295,7 @@ function initialize(
             typeP.then(
                 (time) => {
                     (div.getElementsByClassName("total-time")[0] as HTMLDivElement).innerText =
-                        `Total time: ${(time.time / 1000).toFixed(2)} seconds`;
+                        `Total time: ${(time!.time / 1000).toFixed(2)} seconds`;
                     console.log("Done typing file");
                 },
                 (error) => {
@@ -384,9 +387,9 @@ const html =
 export class Scribe
     extends EventEmitter
     implements IFluidLoadable, IFluidRouter, IFluidHTMLView {
-    public static async load(runtime: IFluidDataStoreRuntime, context: IFluidDataStoreContext) {
+    public static async load(runtime: IFluidDataStoreRuntime, context: IFluidDataStoreContext, existing: boolean) {
         const collection = new Scribe(runtime, context);
-        await collection.initialize();
+        await collection.initialize(existing);
 
         return collection;
     }
@@ -400,8 +403,8 @@ export class Scribe
     public get IFluidRouter() { return this; }
     public get IFluidHTMLView() { return this; }
 
-    private root: ISharedMap;
-    private div: HTMLDivElement;
+    private root: ISharedMap | undefined;
+    private div: HTMLDivElement | undefined;
 
     constructor(private readonly runtime: IFluidDataStoreRuntime, private readonly context: IFluidDataStoreContext) {
         super();
@@ -420,8 +423,8 @@ export class Scribe
                 this.div,
                 this.context,
                 this.runtime,
-                this.root,
-                "https://www.wu2.prague.office-int.com/public/literature/resume.txt",
+                this.root!,
+                "https://www.r11s-wu2-ppe.prague.office-int.com/public/literature/resume.txt",
                 50,
                 1,
                 "");
@@ -434,8 +437,8 @@ export class Scribe
         }
     }
 
-    private async initialize() {
-        if (!this.runtime.existing) {
+    private async initialize(existing: boolean) {
+        if (!existing) {
             this.root = SharedMap.create(this.runtime, "root");
             this.root.bindToContext();
         } else {
@@ -444,50 +447,55 @@ export class Scribe
     }
 }
 
-class ScribeFactory implements IFluidDataStoreFactory, IRuntimeFactory {
+const defaultComponentId = "default";
+
+class ScribeFactory extends RuntimeFactoryHelper implements IFluidDataStoreFactory {
     public static readonly type = "@fluid-example/scribe";
+    private readonly registry = new Map<string, Promise<IFluidDataStoreFactory>>([
+        [ScribeFactory.type, Promise.resolve(this)],
+    ]);
     public readonly type = ScribeFactory.type;
 
     public get IFluidDataStoreFactory() { return this; }
-    public get IRuntimeFactory() { return this; }
 
-    public async instantiateRuntime(context: IContainerContext): Promise<IRuntime> {
-        const registry = new Map<string, Promise<IFluidDataStoreFactory>>([
-            [ScribeFactory.type, Promise.resolve(this)],
-        ]);
+    public async instantiateFirstTime(runtime: ContainerRuntime): Promise<void> {
+        await runtime.createRootDataStore(ScribeFactory.type, defaultComponentId);
+    }
 
-        const defaultComponentId = "default";
-
-        const runtime = await ContainerRuntime.load(
+    public async preInitialize(
+        context: IContainerContext,
+        existing: boolean,
+    ): Promise<ContainerRuntime> {
+        const runtime: ContainerRuntime = await ContainerRuntime.load(
             context,
-            registry,
+            this.registry,
             buildRuntimeRequestHandler(
                 defaultRouteRequestHandler(defaultComponentId),
                 innerRequestHandler,
             ),
-            { generateSummaries: true });
-
-        // On first boot create the base component
-        if (!runtime.existing) {
-            await runtime.createRootDataStore(ScribeFactory.type, defaultComponentId);
-        }
+            undefined, // runtimeOptions
+            undefined, // containerScope
+            existing,
+        );
 
         return runtime;
     }
 
-    public async instantiateDataStore(context: IFluidDataStoreContext) {
-        const dataTypes = new Map<string, IChannelFactory>();
-        const mapFactory = SharedMap.getFactory();
-        dataTypes.set(mapFactory.type, mapFactory);
-
+    public async instantiateDataStore(context: IFluidDataStoreContext, existing: boolean) {
         const runtimeClass = mixinRequestHandler(
             async (request: IRequest) => {
                 const router = await routerP;
                 return router.request(request);
             });
 
-        const runtime = new runtimeClass(context, dataTypes);
-        const routerP = Scribe.load(runtime, context);
+        const runtime = new runtimeClass(
+            context,
+            new Map([
+                SharedMap.getFactory(),
+            ].map((factory) => [factory.type, factory])),
+            existing,
+        );
+        const routerP = Scribe.load(runtime, context, existing);
 
         return runtime;
     }

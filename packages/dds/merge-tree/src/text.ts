@@ -1,17 +1,21 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import * as MergeTree from "./mergeTree";
-import * as ops from "./ops";
+import {
+    ISegment,
+    Marker,
+    MergeTree,
+    reservedTileLabelsKey,
+} from "./mergeTree";
+import { ReferenceType } from "./ops";
 import { TextSegment } from "./textSegment";
 
 export function loadSegments(content: string, segLimit: number, markers: boolean = false, withProps: boolean = true) {
-    // eslint-disable-next-line no-param-reassign
-    content = content.replace(/^\uFEFF/, "");
+    const BOMFreeContent = content.replace(/^\uFEFF/, "");
 
-    const paragraphs = content.split(/\r?\n/);
+    const paragraphs = BOMFreeContent.split(/\r?\n/);
     for (let i = 0, len = paragraphs.length; i < len; i++) {
         paragraphs[i] = paragraphs[i]
             .replace(/\r?\n/g, " ")
@@ -22,16 +26,16 @@ export function loadSegments(content: string, segLimit: number, markers: boolean
         }
     }
 
-    const segments = [] as MergeTree.ISegment[];
+    const segments = [] as ISegment[];
     for (const paragraph of paragraphs) {
-        let pgMarker: MergeTree.Marker;
+        let pgMarker: Marker | undefined;
         if (markers) {
-            pgMarker = MergeTree.Marker.make(ops.ReferenceType.Tile,
-                { [MergeTree.reservedTileLabelsKey]: ["pg"] });
+            pgMarker = Marker.make(ReferenceType.Tile,
+                { [reservedTileLabelsKey]: ["pg"] });
         }
         if (withProps) {
             if ((paragraph.includes("Chapter")) || (paragraph.includes("PRIDE AND PREJ"))) {
-                if (markers) {
+                if (pgMarker) {
                     pgMarker.addProperties({ header: 2 });
                     segments.push(new TextSegment(paragraph));
                 } else {
@@ -57,7 +61,7 @@ export function loadSegments(content: string, segLimit: number, markers: boolean
         } else {
             segments.push(new TextSegment(paragraph));
         }
-        if (markers) {
+        if (pgMarker) {
             segments.push(pgMarker);
         }
     }
@@ -69,7 +73,7 @@ export function loadSegments(content: string, segLimit: number, markers: boolean
     return segments;
 }
 
-export function loadText(content: string, mergeTree: MergeTree.MergeTree, segLimit: number, markers = false) {
+export function loadText(content: string, mergeTree: MergeTree, segLimit: number, markers = false) {
     const segments = loadSegments(content, segLimit, markers);
     mergeTree.reloadFromSegments(segments);
     // console.log(`Number of Segments: ${segments.length}`);

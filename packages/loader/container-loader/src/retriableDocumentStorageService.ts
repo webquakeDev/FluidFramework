@@ -1,79 +1,126 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import { v4 as uuid } from "uuid";
-import { CreateContainerError } from "@fluidframework/container-utils";
-import { IDocumentStorageService } from "@fluidframework/driver-definitions";
-import { canRetryOnError, DocumentStorageServiceProxy } from "@fluidframework/driver-utils";
-import { ISnapshotTree, IVersion } from "@fluidframework/protocol-definitions";
-import { DeltaManager, getRetryDelayFromError } from "./deltaManager";
+import { assert } from "@fluidframework/common-utils";
+import { GenericError } from "@fluidframework/container-utils";
+import {
+    IDocumentStorageService,
+    IDocumentStorageServicePolicies,
+    ISummaryContext,
+} from "@fluidframework/driver-definitions";
+import {
+    ICreateBlobResponse,
+    ISnapshotTree,
+    ISummaryHandle,
+    ISummaryTree,
+    ITree,
+    IVersion,
+} from "@fluidframework/protocol-definitions";
+import { IDisposable, ITelemetryLogger } from "@fluidframework/common-definitions";
+import { runWithRetry } from "@fluidframework/driver-utils";
 
-export class RetriableDocumentStorageService extends DocumentStorageServiceProxy {
-    private disposed = false;
+export class RetriableDocumentStorageService implements IDocumentStorageService, IDisposable {
+    private _disposed = false;
     constructor(
-        internalStorageService: IDocumentStorageService,
-        private readonly deltaManager: Pick<DeltaManager, "emitDelayInfo" | "refreshDelayInfo">,
+        private readonly internalStorageService: IDocumentStorageService,
+        private readonly logger: ITelemetryLogger,
     ) {
-        super(internalStorageService);
     }
 
+    public get policies(): IDocumentStorageServicePolicies | undefined {
+        return this.internalStorageService.policies;
+    }
+    public get disposed() { return this._disposed; }
     public dispose() {
-        this.disposed = true;
+        this._disposed = true;
+    }
+
+    public get repositoryUrl(): string {
+        return this.internalStorageService.repositoryUrl;
     }
 
     public async getSnapshotTree(version?: IVersion): Promise<ISnapshotTree | null> {
-        return this.readWithRetry(async () => this.internalStorageService.getSnapshotTree(version));
-    }
-
-    public async read(blobId: string): Promise<string> {
-        return this.readWithRetry(async () => this.internalStorageService.read(blobId));
+        return this.runWithRetry(
+            async () => this.internalStorageService.getSnapshotTree(version),
+            "storage_getSnapshotTree",
+        );
     }
 
     public async readBlob(id: string): Promise<ArrayBufferLike> {
-        return this.readWithRetry(async () => this.internalStorageService.readBlob(id));
+        return this.runWithRetry(
+            async () => this.internalStorageService.readBlob(id),
+            "storage_readBlob",
+        );
     }
 
-    public async readString(id: string): Promise<string> {
-        return this.readWithRetry(async () => this.internalStorageService.readString(id));
+    public async getVersions(versionId: string, count: number): Promise<IVersion[]> {
+        return this.runWithRetry(
+            async () => this.internalStorageService.getVersions(versionId, count),
+            "storage_getVersions",
+        );
     }
 
-    private async delay(timeMs: number): Promise<void> {
-        return new Promise((resolve) => setTimeout(() => resolve(), timeMs));
+    public async write(tree: ITree, parents: string[], message: string, ref: string): Promise<IVersion> {
+        return this.runWithRetry(
+            async () => this.internalStorageService.write(tree, parents, message, ref),
+            "storage_write",
+        );
     }
 
-    private async readWithRetry<T>(api: () => Promise<T>): Promise<T> {
-        let result: T | undefined;
-        let success = false;
-        let retryAfter = 0;
-        let id: string | undefined;
-        do {
-            try {
-                result = await api();
-                if (id !== undefined) {
-                    this.deltaManager.refreshDelayInfo(id);
-                }
-                success = true;
-            } catch (err) {
-                if (this.disposed) {
-                    throw CreateContainerError("Storage service disposed!!");
-                }
-                // If it is not retriable, then just throw the error.
-                if (!canRetryOnError(err)) {
-                    throw err;
-                }
-                // If the error is throttling error, then wait for the specified time before retrying.
-                // If the waitTime is not specified, then we start with retrying immediately to max of 8s.
-                retryAfter = getRetryDelayFromError(err) ?? Math.min(retryAfter * 2, 8000);
-                if (id === undefined) {
-                    id = uuid();
-                }
-                this.deltaManager.emitDelayInfo(id, retryAfter, CreateContainerError(err));
-                await this.delay(retryAfter);
-            }
-        } while (!success);
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        return result!;
+    public async uploadSummaryWithContext(summary: ISummaryTree, context: ISummaryContext): Promise<string> {
+        // Not using retry loop here. Couple reasons:
+        // 1. If client lost connectivity, then retry loop will result in uploading stale summary
+        //    by stale summarizer after connectivity comes back. It will cause failures for this client and for
+        //    real (new) summarizer. This problem in particular should be solved in future by supplying abort handle
+        //    on all APIs and caller (ContainerRuntime.submitSummary) aborting call on loss of connectivity
+        // 2. Similar, if we get 429 with retryAfter = 10 minutes, it's likely not the right call to retry summary
+        //    upload in 10 minutes - it's better to keep processing ops and retry later. Though caller needs to take
+        //    retryAfter into account!
+        // But retry loop is required for creation flow (Container.attach)
+        assert((context.referenceSequenceNumber === 0) === (context.ackHandle === undefined),
+            0x251 /* "creation summary has to have seq=0 && handle === undefined" */);
+        if (context.referenceSequenceNumber !== 0) {
+            return this.internalStorageService.uploadSummaryWithContext(summary, context);
+        }
+
+        // Creation flow with attachment blobs - need to do retries!
+        return this.runWithRetry(
+            async () => this.internalStorageService.uploadSummaryWithContext(summary, context),
+            "storage_uploadSummaryWithContext",
+        );
+    }
+
+    public async downloadSummary(handle: ISummaryHandle): Promise<ISummaryTree> {
+        return this.runWithRetry(
+            async () => this.internalStorageService.downloadSummary(handle),
+            "storage_downloadSummary",
+        );
+    }
+
+    public async createBlob(file: ArrayBufferLike): Promise<ICreateBlobResponse> {
+        return this.runWithRetry(
+            async () => this.internalStorageService.createBlob(file),
+            "storage_createBlob",
+        );
+    }
+
+    private checkStorageDisposed() {
+        if (this._disposed) {
+            throw new GenericError("storageServiceDisposedCannotRetry", { canRetry: false });
+        }
+        return undefined;
+    }
+
+    private async runWithRetry<T>(api: () => Promise<T>, callName: string): Promise<T> {
+        return runWithRetry(
+            api,
+            callName,
+            this.logger,
+            {
+                retry: () => this.checkStorageDisposed(),
+            },
+        );
     }
 }

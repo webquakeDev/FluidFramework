@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -42,7 +42,7 @@ function createSubDirectoryWithInterception<T extends IDirectory>(
         let directory;
         // Set should not be called on the wrapped object from the interception callback as this will lead to
         // infinite recursion.
-        assert(executingCallback === false, "set called recursively from the interception callback");
+        assert(executingCallback === false, 0x0bf /* "set called recursively from the interception callback" */);
 
         context.containerRuntime.orderSequentially(() => {
             directory = subDirectory.set(key, value);
@@ -62,7 +62,7 @@ function createSubDirectoryWithInterception<T extends IDirectory>(
         return createSubDirectoryWithInterception(baseDirectory, subSubDirectory, context, setInterceptionCallback);
     };
 
-    subDirectoryWithInterception.getSubDirectory = (subdirName: string): IDirectory => {
+    subDirectoryWithInterception.getSubDirectory = (subdirName: string): IDirectory | undefined => {
         const subSubDirectory = subDirectory.getSubDirectory(subdirName);
         return subSubDirectory === undefined ?
             subSubDirectory :
@@ -94,9 +94,11 @@ function createSubDirectoryWithInterception<T extends IDirectory>(
         return iterator;
     };
 
-    subDirectoryWithInterception.getWorkingDirectory = (relativePath: string): IDirectory => {
+    subDirectoryWithInterception.getWorkingDirectory = (relativePath: string): IDirectory | undefined => {
         const subSubDirectory = subDirectory.getWorkingDirectory(relativePath);
-        return createSubDirectoryWithInterception(baseDirectory, subSubDirectory, context, setInterceptionCallback);
+        return subSubDirectory === undefined ?
+            subSubDirectory :
+            createSubDirectoryWithInterception(baseDirectory, subSubDirectory, context, setInterceptionCallback);
     };
 
     // eslint-disable-next-line @typescript-eslint/no-unsafe-return

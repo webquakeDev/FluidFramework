@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -35,10 +35,11 @@ export async function getInsights(map: ISharedMap, id: string): Promise<ISharedM
 }
 
 export async function setTranslation(
-    document: { existing: boolean, getRoot: () => ISharedMap },
+    document: { getRoot: () => ISharedMap },
     id: string,
     fromLanguage: string,
     toLanguage: string,
+    existing: boolean,
 ): Promise<void> {
     // Create the translations map
     const handle = await document.getRoot().wait<IFluidHandle<ISharedMap>>("insights");
@@ -47,7 +48,7 @@ export async function setTranslation(
     const idMapHandle = await insights.wait<IFluidHandle<ISharedMap>>(id);
     const idMap = await idMapHandle.get();
 
-    if (!document.existing) {
+    if (!existing) {
         idMap.set("translationFrom", fromLanguage);
         idMap.set("translationTo", toLanguage);
     }

@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -7,17 +7,16 @@
 
 import { strict as assert } from "assert";
 import { ISequencedDocumentMessage } from "@fluidframework/protocol-definitions";
-import { TextSegment } from "../";
 import { LocalClientId, UnassignedSequenceNumber, UniversalSequenceNumber } from "../constants";
 import { BaseSegment, Marker, MergeTree } from "../mergeTree";
 import { ICombiningOp, MergeTreeDeltaType, ReferenceType } from "../ops";
+import { TextSegment } from "../textSegment";
 
 describe("MergeTree", () => {
     let mergeTree: MergeTree;
     const remoteClientId = 35;
     const localClientId = 17;
     let currentSequenceNumber: number;
-    const branchId = 0;
 
     const annotateStart = 1;
     const markerPosition = annotateStart + 2;
@@ -89,8 +88,7 @@ describe("MergeTree", () => {
                 mergeTree.startCollaboration(
                     localClientId,
                     /* minSeq: */ currentSequenceNumber,
-                    /* currentSeq: */ currentSequenceNumber,
-                    branchId);
+                    /* currentSeq: */ currentSequenceNumber);
             });
             describe("local first", () => {
                 const props = {

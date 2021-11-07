@@ -1,15 +1,16 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import * as bodyParser from "body-parser";
+import { json, urlencoded } from "body-parser";
 import cors from "cors";
+// eslint-disable-next-line import/no-duplicates
 import express from "express";
-// eslint-disable-next-line no-duplicate-imports
+// eslint-disable-next-line @typescript-eslint/no-duplicate-imports, import/no-duplicates
 import { Express } from "express";
 import morgan from "morgan";
-import * as nconf from "nconf";
+import nconf from "nconf";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import split = require("split");
 import * as winston from "winston";
@@ -32,11 +33,28 @@ export function create(
     // Express app configuration
     const app: Express = express();
 
-    app.use(morgan(store.get("logger:morganFormat"), { stream }));
+    const loggerFormat = store.get("logger:morganFormat");
+    if (loggerFormat === "json") {
+        app.use(morgan((tokens, req, res) => {
+            const messageMetaData = {
+                method: tokens.method(req, res),
+                url: tokens.url(req, res),
+                status: tokens.status(req, res),
+                contentLength: tokens.res(req, res, "content-length"),
+                responseTime: tokens["response-time"](req, res),
+                serviceName: "historian",
+                eventName: "http_requests",
+             };
+             winston.info("request log generated", { messageMetaData });
+             return undefined;
+        }, { stream }));
+    } else {
+        app.use(morgan(loggerFormat, { stream }));
+    }
 
     const requestSize = store.get("requestSizeLimit");
-    app.use(bodyParser.json({ limit: requestSize }));
-    app.use(bodyParser.urlencoded({ limit: requestSize, extended: false }));
+    app.use(json({ limit: requestSize }));
+    app.use(urlencoded({ limit: requestSize, extended: false }));
 
     app.use(bindCorrelationId());
 
@@ -51,6 +69,7 @@ export function create(
     app.use(apiRoutes.git.commits);
     app.use(apiRoutes.repository.commits);
     app.use(apiRoutes.repository.contents);
+    app.use(apiRoutes.summaries);
 
     // catch 404 and forward to error handler
     app.use((req, res, next) => {

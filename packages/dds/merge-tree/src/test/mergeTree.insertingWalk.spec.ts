@@ -1,10 +1,18 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { strict as assert } from "assert";
-import { IMergeBlock, MaxNodesInBlock, MergeTree, MergeTreeTextHelper, TextSegment } from "../";
+import {
+    IMergeBlock,
+    MaxNodesInBlock,
+    MergeTree,
+} from "../mergeTree";
+import {
+    MergeTreeTextHelper,
+    TextSegment,
+} from "../textSegment";
 import { LocalClientId, UnassignedSequenceNumber, UniversalSequenceNumber } from "../constants";
 import { insertText, nodeOrdinalsHaveIntegrity } from "./testUtils";
 
@@ -22,7 +30,6 @@ interface ITestData {
 }
 
 const localClientId = 17;
-const branchId = 0;
 const treeFactories: ITestTreeFactory[] = [
     {
         create: () => {
@@ -38,8 +45,7 @@ const treeFactories: ITestTreeFactory[] = [
             mergeTree.startCollaboration(
                 localClientId,
                 /* minSeq: */ UniversalSequenceNumber,
-                /* currentSeq: */ UniversalSequenceNumber,
-                branchId);
+                /* currentSeq: */ UniversalSequenceNumber);
             return {
                 initialText,
                 mergeTree,
@@ -94,8 +100,7 @@ const treeFactories: ITestTreeFactory[] = [
             mergeTree.startCollaboration(
                 localClientId,
                 /* minSeq: */ UniversalSequenceNumber,
-                /* currentSeq: */ UniversalSequenceNumber,
-                branchId);
+                /* currentSeq: */ UniversalSequenceNumber);
             return {
                 initialText,
                 mergeTree,
@@ -157,8 +162,7 @@ const treeFactories: ITestTreeFactory[] = [
             mergeTree.startCollaboration(
                 localClientId,
                 /* minSeq: */ UniversalSequenceNumber,
-                /* currentSeq: */ UniversalSequenceNumber,
-                branchId);
+                /* currentSeq: */ UniversalSequenceNumber);
 
             return {
                 initialText,

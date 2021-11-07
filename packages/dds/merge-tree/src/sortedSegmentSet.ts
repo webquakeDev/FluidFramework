@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -27,13 +27,13 @@ export class SortedSegmentSet<T extends ISegment | { readonly segment: ISegment 
     }
 
     public addOrUpdate(newItem: T, update?: (existingItem: T, newItem: T) => T) {
-        const postition = this.findOrdinalPosition(this.getOrdinal(newItem));
-        if (postition.exists) {
+        const position = this.findOrdinalPosition(this.getOrdinal(newItem));
+        if (position.exists) {
             if (update) {
-                update(this.oridinalSortedItems[postition.index], newItem);
+                update(this.oridinalSortedItems[position.index], newItem);
             }
         } else {
-            this.oridinalSortedItems.splice(postition.index, 0, newItem);
+            this.oridinalSortedItems.splice(position.index, 0, newItem);
         }
     }
 

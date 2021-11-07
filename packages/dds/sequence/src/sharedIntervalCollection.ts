@@ -1,13 +1,10 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import { fromBase64ToUtf8 } from "@fluidframework/common-utils";
+import { bufferToString } from "@fluidframework/common-utils";
 import { IFluidSerializer } from "@fluidframework/core-interfaces";
-import {
-    MapKernel,
-} from "@fluidframework/map";
 import {
     FileMode, ISequencedDocumentMessage, ITree, MessageType, TreeEntry,
 } from "@fluidframework/protocol-definitions";
@@ -21,13 +18,13 @@ import {
 import {
     SharedObject,
 } from "@fluidframework/shared-object-base";
-import { debug } from "./debug";
 import {
     Interval,
     IntervalCollection,
     IntervalCollectionValueType,
     ISerializableInterval,
 } from "./intervalCollection";
+import { MapKernel } from "./mapKernel";
 import { pkgVersion } from "./packageVersion";
 
 const snapshotFileName = "header";
@@ -161,8 +158,6 @@ export class SharedIntervalCollection<TInterval extends ISerializableInterval = 
                     },
                 },
             ],
-            // eslint-disable-next-line no-null/no-null
-            id: null,
         };
 
         return tree;
@@ -172,23 +167,20 @@ export class SharedIntervalCollection<TInterval extends ISerializableInterval = 
         this.intervalMapKernel.trySubmitMessage(content, localOpMetadata);
     }
 
-    protected onDisconnect() {
-        debug(`${this.id} is now disconnected`);
-    }
+    protected onDisconnect() { }
 
     /**
      * {@inheritDoc @fluidframework/shared-object-base#SharedObject.loadCore}
      */
     protected async loadCore(storage: IChannelStorageService) {
-        const header = await storage.read(snapshotFileName);
-
-        const data: string = header ? fromBase64ToUtf8(header) : undefined;
-        this.intervalMapKernel.populate(data);
+        const blob = await storage.readBlob(snapshotFileName);
+        const header = bufferToString(blob,"utf8");
+        this.intervalMapKernel.populate(header);
     }
 
     protected processCore(message: ISequencedDocumentMessage, local: boolean, localOpMetadata: unknown) {
         if (message.type === MessageType.Operation) {
-            this.intervalMapKernel.tryProcessMessage(message, local, localOpMetadata);
+            this.intervalMapKernel.tryProcessMessage(message.contents, local, message, localOpMetadata);
         }
     }
 
@@ -206,5 +198,9 @@ export class SharedIntervalCollection<TInterval extends ISerializableInterval = 
      */
     protected getIntervalCollectionPath(label: string): string {
         return label;
+    }
+
+    protected applyStashedOp() {
+        throw new Error("not implemented");
     }
 }

@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -11,26 +11,26 @@ import {
     IResponse,
     IFluidCodeDetails,
     IFluidCodeDetailsComparer,
+    IProvideFluidCodeDetailsComparer,
 } from "@fluidframework/core-interfaces";
 import {
     IAudience,
-    ICodeLoader,
     IContainerContext,
     IDeltaManager,
     ILoader,
     IRuntime,
-    IRuntimeState,
     ICriticalContainerError,
     ContainerWarning,
     AttachState,
-    IFluidModule,
     ILoaderOptions,
+    IRuntimeFactory,
+    ICodeLoader,
+    IProvideRuntimeFactory,
 } from "@fluidframework/container-definitions";
 import { IDocumentStorageService } from "@fluidframework/driver-definitions";
 import {
     IClientConfiguration,
     IClientDetails,
-    IDocumentAttributes,
     IDocumentMessage,
     IQuorum,
     ISequencedDocumentMessage,
@@ -44,7 +44,7 @@ import {
 import { PerformanceEvent } from "@fluidframework/telemetry-utils";
 import { assert, LazyPromise } from "@fluidframework/common-utils";
 import { Container } from "./container";
-import { NullChaincode, NullRuntime } from "./nullRuntime";
+import { ICodeDetailsLoader, IFluidModuleWithDetails } from "./loader";
 
 const PackageNotFactoryError = "Code package does not implement IRuntimeFactory";
 
@@ -52,20 +52,20 @@ export class ContainerContext implements IContainerContext {
     public static async createOrLoad(
         container: Container,
         scope: IFluidObject,
-        codeLoader: ICodeLoader,
+        codeLoader: ICodeDetailsLoader | ICodeLoader,
         codeDetails: IFluidCodeDetails,
         baseSnapshot: ISnapshotTree | undefined,
-        attributes: IDocumentAttributes,
         deltaManager: IDeltaManager<ISequencedDocumentMessage, IDocumentMessage>,
         quorum: IQuorum,
         loader: ILoader,
         raiseContainerWarning: (warning: ContainerWarning) => void,
         submitFn: (type: MessageType, contents: any, batch: boolean, appData: any) => number,
         submitSignalFn: (contents: any) => void,
-        snapshotFn: (message: string) => Promise<void>,
         closeFn: (error?: ICriticalContainerError) => void,
         version: string,
-        previousRuntimeState: IRuntimeState,
+        updateDirtyContainerState: (dirty: boolean) => void,
+        existing: boolean,
+        pendingLocalState?: unknown,
     ): Promise<ContainerContext> {
         const context = new ContainerContext(
             container,
@@ -73,22 +73,31 @@ export class ContainerContext implements IContainerContext {
             codeLoader,
             codeDetails,
             baseSnapshot,
-            attributes,
             deltaManager,
             quorum,
             loader,
             raiseContainerWarning,
             submitFn,
             submitSignalFn,
-            snapshotFn,
             closeFn,
             version,
-            previousRuntimeState);
-        await context.load();
+            updateDirtyContainerState,
+            existing,
+            pendingLocalState);
+        await context.instantiateRuntime(existing);
         return context;
     }
 
-    public readonly logger: ITelemetryLogger;
+    public readonly taggedLogger: ITelemetryLogger;
+
+    /**
+     * Subtlety: returns this.taggedLogger since vanilla this.logger is now deprecated. See IContainerContext for more
+     * details.
+    */
+    /** @deprecated See IContainerContext for more details. */
+    public get logger(): ITelemetryLogger {
+        return this.taggedLogger;
+    }
 
     public get id(): string {
         return this.container.id;
@@ -100,18 +109,6 @@ export class ContainerContext implements IContainerContext {
 
     public get clientDetails(): IClientDetails {
         return this.container.clientDetails;
-    }
-
-    public get existing(): boolean | undefined {
-        return this.container.existing;
-    }
-
-    public get branch(): string {
-        return this.attributes.branch;
-    }
-
-    public get runtimeVersion(): string | undefined {
-        return this.runtime?.runtimeVersion;
     }
 
     public get connected(): boolean {
@@ -145,7 +142,7 @@ export class ContainerContext implements IContainerContext {
         return this._baseSnapshot;
     }
 
-    public get storage(): IDocumentStorageService | undefined | null {
+    public get storage(): IDocumentStorageService {
         return this.container.storage;
     }
 
@@ -163,50 +160,34 @@ export class ContainerContext implements IContainerContext {
         return this._disposed;
     }
 
-    private readonly fluidModuleP = new LazyPromise<IFluidModule>(async () => {
-        if (this.codeDetails === undefined) {
-            const fluidExport =  new NullChaincode();
-            return {
-                fluidExport,
-            };
-        }
+    public get codeDetails() { return this._codeDetails; }
 
-        const fluidModule = await PerformanceEvent.timedExecAsync(this.logger, { eventName: "CodeLoad" },
-            async () => this.codeLoader.load(this.codeDetails),
-        );
-
-        return fluidModule;
-    });
+    private readonly _fluidModuleP: Promise<IFluidModuleWithDetails>;
 
     constructor(
         private readonly container: Container,
         public readonly scope: IFluidObject,
-        private readonly codeLoader: ICodeLoader,
-        public readonly codeDetails: IFluidCodeDetails,
+        private readonly codeLoader: ICodeDetailsLoader | ICodeLoader,
+        private readonly _codeDetails: IFluidCodeDetails,
         private readonly _baseSnapshot: ISnapshotTree | undefined,
-        private readonly attributes: IDocumentAttributes,
         public readonly deltaManager: IDeltaManager<ISequencedDocumentMessage, IDocumentMessage>,
         public readonly quorum: IQuorum,
         public readonly loader: ILoader,
         public readonly raiseContainerWarning: (warning: ContainerWarning) => void,
         public readonly submitFn: (type: MessageType, contents: any, batch: boolean, appData: any) => number,
         public readonly submitSignalFn: (contents: any) => void,
-        public readonly snapshotFn: (message: string) => Promise<void>,
         public readonly closeFn: (error?: ICriticalContainerError) => void,
         public readonly version: string,
-        public readonly previousRuntimeState: IRuntimeState,
-    ) {
-        this.logger = container.subLogger;
-        this.attachListener();
-    }
+        public readonly updateDirtyContainerState: (dirty: boolean) => void,
+        public readonly existing: boolean,
+        public readonly pendingLocalState?: unknown,
 
-    private attachListener() {
-        this.container.once("attaching", () => {
-            this._runtime?.setAttachState?.(AttachState.Attaching);
-        });
-        this.container.once("attached", () => {
-            this._runtime?.setAttachState?.(AttachState.Attached);
-        });
+    ) {
+        this.taggedLogger = container.subLogger;
+        this._fluidModuleP = new LazyPromise<IFluidModuleWithDetails>(
+            async () => this.loadCodeModule(_codeDetails),
+        );
+        this.attachListener();
     }
 
     public dispose(error?: Error): void {
@@ -228,25 +209,25 @@ export class ContainerContext implements IContainerContext {
         return this.container.loadedFromVersion;
     }
 
-    /**
-     * Snapshot and close the runtime, and return its state if available
-     */
-    public async snapshotRuntimeState(): Promise<IRuntimeState> {
-        return this.runtime.stop();
-    }
-
     public get attachState(): AttachState {
         return this.container.attachState;
     }
 
-    public createSummary(): ISummaryTree {
-        return this.runtime.createSummary();
+    /**
+     * Create a summary. Used when attaching or serializing a detached container.
+     *
+     * @param blobRedirectTable - A table passed during the attach process. While detached, blob upload is supported
+     * using IDs generated locally. After attach, these IDs cannot be used, so this table maps the old local IDs to the
+     * new storage IDs so requests can be redirected.
+     */
+    public createSummary(blobRedirectTable?: Map<string, string>): ISummaryTree {
+        return this.runtime.createSummary(blobRedirectTable);
     }
 
     public setConnectionState(connected: boolean, clientId?: string) {
         const runtime = this.runtime;
 
-        assert(connected === this.connected, "Mismatch in connection state while setting");
+        assert(connected === this.connected, 0x0de /* "Mismatch in connection state while setting" */);
 
         runtime.setConnectionState(connected, clientId);
     }
@@ -263,24 +244,12 @@ export class ContainerContext implements IContainerContext {
         return this.runtime.request(path);
     }
 
-    public async requestSnapshot(tagMessage: string): Promise<void> {
-        return this.snapshotFn(tagMessage);
-    }
-
-    public registerTasks(tasks: string[]): any {
-        return;
-    }
-
-    public async reloadContext(): Promise<void> {
-        return this.container.reloadContext();
-    }
-
-    public hasNullRuntime() {
-        return this.runtime instanceof NullRuntime;
-    }
-
     public async getAbsoluteUrl(relativeUrl: string): Promise<string | undefined> {
         return this.container.getAbsoluteUrl(relativeUrl);
+    }
+
+    public getPendingLocalState(): unknown {
+        return this.runtime.getPendingLocalState();
     }
 
     /**
@@ -295,7 +264,9 @@ export class ContainerContext implements IContainerContext {
             comparers.push(maybeCompareCodeLoader.IFluidCodeDetailsComparer);
         }
 
-        const maybeCompareExport = (await this.fluidModuleP).fluidExport;
+        const moduleWithDetails = await this._fluidModuleP;
+        const maybeCompareExport: Partial<IProvideFluidCodeDetailsComparer> | undefined =
+            moduleWithDetails.module?.fluidExport;
         if (maybeCompareExport?.IFluidCodeDetailsComparer !== undefined) {
             comparers.push(maybeCompareExport.IFluidCodeDetailsComparer);
         }
@@ -310,7 +281,10 @@ export class ContainerContext implements IContainerContext {
         }
 
         for (const comparer of comparers) {
-            const satisfies = await comparer.satisfies(this.codeDetails, constraintCodeDetails);
+            const satisfies = await comparer.satisfies(
+                moduleWithDetails.details,
+                constraintCodeDetails,
+            );
             if (satisfies === false) {
                 return false;
             }
@@ -318,11 +292,50 @@ export class ContainerContext implements IContainerContext {
         return true;
     }
 
-    private async load() {
-        const maybeFactory = (await this.fluidModuleP).fluidExport.IRuntimeFactory;
-        if (maybeFactory === undefined) {
+    public notifyAttaching() {
+        this.runtime.setAttachState(AttachState.Attaching);
+    }
+
+    // #region private
+
+    private async getRuntimeFactory(): Promise<IRuntimeFactory> {
+        const fluidExport: Partial<IProvideRuntimeFactory> | undefined =
+            (await this._fluidModuleP).module?.fluidExport;
+        const runtimeFactory = fluidExport?.IRuntimeFactory;
+        if (runtimeFactory === undefined) {
             throw new Error(PackageNotFactoryError);
         }
-        this._runtime = await maybeFactory.instantiateRuntime(this);
+
+        return runtimeFactory;
     }
+
+    private async instantiateRuntime(existing: boolean) {
+        const runtimeFactory = await this.getRuntimeFactory();
+        this._runtime = await runtimeFactory.instantiateRuntime(this, existing);
+    }
+
+    private attachListener() {
+        this.container.once("attached", () => {
+            this.runtime.setAttachState(AttachState.Attached);
+        });
+    }
+
+    private async loadCodeModule(codeDetails: IFluidCodeDetails) {
+        const loadCodeResult = await PerformanceEvent.timedExecAsync(
+            this.taggedLogger,
+            { eventName: "CodeLoad" },
+            async () => this.codeLoader.load(codeDetails),
+        );
+
+        if ("module" in loadCodeResult) {
+            const { module, details } = loadCodeResult;
+            return {
+                module,
+                details: details ?? codeDetails,
+            };
+        } else {
+            return { module: loadCodeResult, details: codeDetails };
+        }
+    }
+    // #endregion
 }

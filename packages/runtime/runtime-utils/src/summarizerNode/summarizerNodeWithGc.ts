@@ -1,31 +1,33 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { ITelemetryLogger } from "@fluidframework/common-definitions";
-import { assert, LazyPromise } from "@fluidframework/common-utils";
+import { assert, LazyPromise, Timer } from "@fluidframework/common-utils";
 import { cloneGCData } from "@fluidframework/garbage-collector";
-import { ISnapshotTree } from "@fluidframework/protocol-definitions";
+import { ISequencedDocumentMessage, ISnapshotTree } from "@fluidframework/protocol-definitions";
 import {
     CreateChildSummarizerNodeParam,
     gcBlobKey,
-    IContextSummarizeResult,
     IGarbageCollectionData,
     IGarbageCollectionSummaryDetails,
     ISummarizeInternalResult,
-    ISummarizerNodeConfig,
+    ISummarizeResult,
+    ISummarizerNodeConfigWithGC,
     ISummarizerNodeWithGC,
 } from "@fluidframework/runtime-definitions";
+import { ReadAndParseBlob } from "../utils";
 import { SummarizerNode } from "./summarizerNode";
 import {
     EscapedPath,
     ICreateChildDetails,
     IInitialSummary,
     ISummarizerNodeRootContract,
-    ReadAndParseBlob,
     SummaryNode,
 } from "./summarizerNodeUtils";
+
+const defaultMaxUnreferencedDurationMs = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export interface IRootSummarizerNodeWithGC extends ISummarizerNodeWithGC, ISummarizerNodeRootContract {}
 
@@ -47,14 +49,13 @@ class SummaryNodeWithGC extends SummaryNode {
 /**
  * Extends the functionality of SummarizerNode to manage this node's garbage collection data:
  * - Adds a new API `getGCData` to return GC data of this node.
- * - Caches the result of getGCData method to be used if nothing changes between summaries.
- * - Adds GC data to the result of summarize.
+ * - Caches the result of `getGCData` to be used if nothing changes between summaries.
+ * - Manages the used routes of this node. These are used to identify if this node is referenced in the document
+ *   and to determine if the node's used state changed since last summary.
  * - Adds trackState param to summarize. If trackState is false, it bypasses the SummarizerNode and calls
  *   directly into summarizeInternal method.
  */
 export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummarizerNodeWithGC {
-    private gcData: IGarbageCollectionData | undefined;
-
     // Tracks the work-in-progress used routes during summary.
     private wipSerializedUsedRoutes: string | undefined;
 
@@ -62,7 +63,33 @@ export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummari
     private referenceUsedRoutes: string[] | undefined;
 
     // The GC details of this node in the initial summary.
-    private readonly gcDetailsInInitialSummaryP: LazyPromise<IGarbageCollectionSummaryDetails>;
+    private gcDetailsInInitialSummaryP: LazyPromise<IGarbageCollectionSummaryDetails> | undefined;
+
+    private gcData: IGarbageCollectionData | undefined;
+
+    // Set used routes to have self route by default. This makes the node referenced by default. This is done to ensure
+    // that this node is not marked as collected when running GC has been disabled. Once, the option to disable GC is
+    // removed (from runGC flag in IContainerRuntimeOptions), this should be changed to be have no routes by default.
+    private usedRoutes: string[] = [""];
+
+    // If this node is marked as unreferenced, the time when it marked as such.
+    private unreferencedTimestampMs: number | undefined;
+
+    // The max duration for which this node can be unreferenced before it is eligible for deletion.
+    private readonly maxUnreferencedDurationMs: number;
+
+    // The timer that runs when the node is marked unreferenced.
+    private readonly unreferencedTimer: Timer;
+
+    // Tracks whether this node is inactive after being unreferenced for maxUnreferencedDurationMs.
+    private inactive: boolean = false;
+
+    // True if GC is disabled for this node. If so, do not track GC specific state for a summary.
+    private readonly gcDisabled: boolean;
+
+    // Keeps track of whether we logged an use-after-free error. This is temporary since the error is too noisy.
+    // To be removed once this item is completed - https://github.com/microsoft/FluidFramework/issues/7895.
+    private useAfterFreeErrorLogged: boolean = false;
 
     /**
      * Do not call constructor directly.
@@ -71,19 +98,18 @@ export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummari
     public constructor(
         logger: ITelemetryLogger,
         private readonly summarizeFn: (fullTree: boolean, trackState: boolean) => Promise<ISummarizeInternalResult>,
-        config: ISummarizerNodeConfig,
+        config: ISummarizerNodeConfigWithGC,
         changeSequenceNumber: number,
         /** Undefined means created without summary */
         latestSummary?: SummaryNode,
         initialSummary?: IInitialSummary,
         wipSummaryLogger?: ITelemetryLogger,
-        private readonly getGCDataFn?: () => Promise<IGarbageCollectionData>,
+        private readonly getGCDataFn?: (fullGC?: boolean) => Promise<IGarbageCollectionData>,
         getInitialGCSummaryDetailsFn?: () => Promise<IGarbageCollectionSummaryDetails>,
-        public usedRoutes: string[] = [],
     ) {
         super(
             logger,
-            async (fullTree: boolean) => this.summarizeInternal(fullTree, true /* trackState */),
+            async (fullTree: boolean) => summarizeFn(fullTree, true /* trackState */),
             config,
             changeSequenceNumber,
             latestSummary,
@@ -91,72 +117,85 @@ export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummari
             wipSummaryLogger,
         );
 
+        this.gcDisabled = config.gcDisabled === true;
+        this.maxUnreferencedDurationMs = config.maxUnreferencedDurationMs ?? defaultMaxUnreferencedDurationMs;
+
         this.gcDetailsInInitialSummaryP = new LazyPromise(async () => {
-            // back-compat: 0.32. getInitialGCSummaryDetailsFn() returns undefined in 0.31. Remove undefined check
-            // when N > 34.
             const gcSummaryDetails = await getInitialGCSummaryDetailsFn?.();
             return gcSummaryDetails ?? { usedRoutes: [] };
         });
+
+        this.unreferencedTimer = new Timer(this.maxUnreferencedDurationMs, () => {
+            this.inactive = true;
+        });
     }
 
-    public async summarize(fullTree: boolean, trackState: boolean = true): Promise<IContextSummarizeResult> {
-        // Update the reference used routes from the initial GC details. This is used to find out if the used routes has
-        // changed from the last state seen by the server. If so, we cannot reuse previous summary.
-        if (this.referenceUsedRoutes === undefined) {
-            this.referenceUsedRoutes = (await this.gcDetailsInInitialSummaryP).usedRoutes;
+    // Returns the GC details that may be added to this node's summary.
+    public getGCSummaryDetails(): IGarbageCollectionSummaryDetails {
+        return {
+            gcData: this.gcData,
+            usedRoutes: this.usedRoutes,
+            unrefTimestamp: this.unreferencedTimestampMs,
+        };
+    }
+
+    /**
+     * Loads state from this node's initial GC summary details. This contains the following data from the last summary
+     * seen by the server for this client:
+     * - usedRoutes: This is used to figure out if the used state of this node changed since last summary.
+     * - gcData: The garbage collection data of this node that is required for running GC.
+     */
+    private async loadInitialGCSummaryDetails() {
+        if (this.gcDetailsInInitialSummaryP === undefined) {
+            return;
+        }
+
+        const gcDetailsInInitialSummaryP = this.gcDetailsInInitialSummaryP;
+        this.gcDetailsInInitialSummaryP = undefined;
+
+        const gcDetailsInInitialSummary = await gcDetailsInInitialSummaryP;
+        // If the GC details has GC data, initialize our GC data from it.
+        if (gcDetailsInInitialSummary.gcData !== undefined) {
+            this.gcData = cloneGCData(gcDetailsInInitialSummary.gcData);
+        }
+        this.referenceUsedRoutes = gcDetailsInInitialSummary.usedRoutes;
+        this.unreferencedTimestampMs = gcDetailsInInitialSummary.unrefTimestamp;
+    }
+
+    public async summarize(fullTree: boolean, trackState: boolean = true): Promise<ISummarizeResult> {
+        // If GC is not disabled and we are tracking a summary, GC should have run and updated the used routes for this
+        // summary by calling updateUsedRoutes which sets wipSerializedUsedRoutes.
+        if (!this.gcDisabled && this.isTrackingInProgress()) {
+            assert(this.wipSerializedUsedRoutes !== undefined,
+                0x1b1 /* "wip used routes should be set if tracking a summary" */);
         }
 
         // If trackState is true, get summary from base summarizer node which tracks summary state.
         // If trackState is false, get summary from summarizeInternal.
-        if (trackState) {
-            const summarizeResult = await super.summarize(fullTree);
-
-            // If there is no cached GC data, return empty data in summarize result. It is the caller's responsiblity
-            // to ensure that GC data is available by calling getGCData before calling summarize.
-            const gcData = this.gcData !== undefined ? cloneGCData(this.gcData) : { gcNodes: {} };
-
-            return {
-                ...summarizeResult,
-                gcData,
-            };
-        } else {
-            return this.summarizeInternal(fullTree, trackState);
-        }
-    }
-
-    private async summarizeInternal(fullTree: boolean, trackState: boolean): Promise<ISummarizeInternalResult> {
-        const summarizeResult = await this.summarizeFn(fullTree, trackState);
-        // back-compat 0.31 - Older versions will not have GC data in summary.
-        if (summarizeResult.gcData !== undefined) {
-            this.gcData = cloneGCData(summarizeResult.gcData);
-        }
-        return summarizeResult;
+        return trackState ? super.summarize(fullTree) : this.summarizeFn(fullTree, trackState);
     }
 
     /**
-     * Returns the GC data of this node. If nothing has changed since the last time we summarized, it tries to reuse
-     * existing data.
+     * Returns the GC data of this node. If nothing has changed since last summary, it tries to reuse the data from
+     * the previous summary. Else, it gets new GC data from the underlying Fluid object.
+     * @param fullGC - true to bypass optimizations and force full generation of GC data.
      */
-    public async getGCData(): Promise<IGarbageCollectionData> {
-        assert(this.getGCDataFn !== undefined, "GC data cannot be retrieved without getGCDataFn");
+    public async getGCData(fullGC: boolean = false): Promise<IGarbageCollectionData> {
+        assert(!this.gcDisabled, 0x1b2 /* "Getting GC data should not be called when GC is disabled!" */);
+        assert(this.getGCDataFn !== undefined, 0x1b3 /* "GC data cannot be retrieved without getGCDataFn" */);
 
-        if (!this.hasDataChanged()) {
-            // There is no new data since last summary. If we have the GC data from previous run, return it.
-            if (this.gcData !== undefined) {
-                return cloneGCData(this.gcData);
-            }
+        // Load GC details from the initial summary, if not already loaded. If this is the first time this function is
+        // called and the node's data has not changed since last summary, the GC data in initial details is returned.
+        await this.loadInitialGCSummaryDetails();
 
-            // This is the first time GC data is requested in this client, so we need to get GC data from the initial
-            // summary. Note: This info may not be available for clients with old summary. In such cases, we fall back
-            // to getting GC data by calling getGCDataFn.
-            const gcDataInInitialSummary = (await this.gcDetailsInInitialSummaryP).gcData;
-            if (gcDataInInitialSummary !== undefined) {
-                this.gcData = cloneGCData(gcDataInInitialSummary);
-                return gcDataInInitialSummary;
-            }
+        // If there is no new data since last summary and we have GC data from the previous run, return it. We may not
+        // have data from previous GC run for clients with older summary format before GC was added. They won't have
+        // GC details in their initial summary.
+        if (!fullGC && !this.hasDataChanged() && this.gcData !== undefined) {
+            return cloneGCData(this.gcData);
         }
 
-        const gcData = await this.getGCDataFn();
+        const gcData = await this.getGCDataFn(fullGC);
         this.gcData = cloneGCData(gcData);
         return gcData;
     }
@@ -165,8 +204,12 @@ export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummari
      * Called during the start of a summary. Updates the work-in-progress used routes.
      */
     public startSummary(referenceSequenceNumber: number, summaryLogger: ITelemetryLogger) {
-        assert(this.wipSerializedUsedRoutes === undefined, "wip routes should not be set yet in startSummary");
-        this.wipSerializedUsedRoutes = JSON.stringify(this.usedRoutes);
+        // If GC is disabled, skip setting wip used routes since we should not track GC state.
+        if (!this.gcDisabled) {
+            assert(
+                this.wipSerializedUsedRoutes === undefined,
+                0x1b4 /* "We should not already be tracking used routes when to track a new summary" */);
+        }
         super.startSummary(referenceSequenceNumber, summaryLogger);
     }
 
@@ -179,15 +222,23 @@ export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummari
         parentPath: EscapedPath | undefined,
         parentSkipRecursion: boolean,
     ) {
-        const wipSerializedUsedRoutes = this.wipSerializedUsedRoutes;
-        assert(wipSerializedUsedRoutes !== undefined, "wip routes should have been set in startSummary");
+        let wipSerializedUsedRoutes: string | undefined;
+        // If GC is disabled, don't set wip used routes.
+        if (!this.gcDisabled) {
+            wipSerializedUsedRoutes = this.wipSerializedUsedRoutes;
+            assert(wipSerializedUsedRoutes !== undefined, 0x1b5 /* "We should have been tracking used routes" */);
+        }
 
         super.completeSummaryCore(proposalHandle, parentPath, parentSkipRecursion);
 
-        const summaryNode = this.pendingSummaries.get(proposalHandle);
-        if (summaryNode !== undefined) {
-            const summaryNodeWithGC = new SummaryNodeWithGC(wipSerializedUsedRoutes, summaryNode);
-            this.pendingSummaries.set(proposalHandle, summaryNodeWithGC);
+        // If GC is disabled, skip setting pending summary with GC state.
+        if (!this.gcDisabled) {
+            const summaryNode = this.pendingSummaries.get(proposalHandle);
+            if (summaryNode !== undefined) {
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                const summaryNodeWithGC = new SummaryNodeWithGC(wipSerializedUsedRoutes!, summaryNode);
+                this.pendingSummaries.set(proposalHandle, summaryNodeWithGC);
+            }
         }
     }
 
@@ -207,9 +258,12 @@ export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummari
         proposalHandle: string,
         referenceSequenceNumber: number,
     ): void {
-        const summaryNode = this.pendingSummaries.get(proposalHandle) as SummaryNodeWithGC;
-        if (summaryNode !== undefined) {
-            this.referenceUsedRoutes = JSON.parse(summaryNode.serializedUsedRoutes);
+        // If GC is disabled, skip setting referenced used routes since we are not tracking GC state.
+        if (!this.gcDisabled) {
+            const summaryNode = this.pendingSummaries.get(proposalHandle) as SummaryNodeWithGC;
+            if (summaryNode !== undefined) {
+                this.referenceUsedRoutes = JSON.parse(summaryNode.serializedUsedRoutes);
+            }
         }
 
         return super.refreshLatestSummaryFromPending(proposalHandle, referenceSequenceNumber);
@@ -227,16 +281,19 @@ export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummari
         correlatedSummaryLogger: ITelemetryLogger,
         readAndParseBlob: ReadAndParseBlob,
     ): Promise<void> {
-        const gcDetailsBlob = snapshotTree.blobs[gcBlobKey];
-        if (gcDetailsBlob !== undefined) {
-            const gcDetails = await readAndParseBlob<IGarbageCollectionSummaryDetails>(gcDetailsBlob);
+        // If GC is disabled, skip setting referenced used routes since we are not tracking GC state.
+        if (!this.gcDisabled) {
+            const gcDetailsBlob = snapshotTree.blobs[gcBlobKey];
+            if (gcDetailsBlob !== undefined) {
+                const gcDetails = await readAndParseBlob<IGarbageCollectionSummaryDetails>(gcDetailsBlob);
 
-            // Possible re-entrancy. If we have already seen a summary later than this one, ignore it.
-            if (this.referenceSequenceNumber >= referenceSequenceNumber) {
-                return;
+                // Possible re-entrancy. If we have already seen a summary later than this one, ignore it.
+                if (this.referenceSequenceNumber >= referenceSequenceNumber) {
+                    return;
+                }
+
+                this.referenceUsedRoutes = gcDetails.usedRoutes;
             }
-
-            this.referenceUsedRoutes = gcDetails.usedRoutes;
         }
 
         return super.refreshLatestSummaryFromSnapshot(
@@ -263,34 +320,43 @@ export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummari
          * Attach information if it is created from an attach op.
          */
         createParam: CreateChildSummarizerNodeParam,
-        config: ISummarizerNodeConfig = {},
-        getGCDataFn?: () => Promise<IGarbageCollectionData>,
+        config: ISummarizerNodeConfigWithGC = {},
+        getGCDataFn?: (fullGC?: boolean) => Promise<IGarbageCollectionData>,
         getInitialGCSummaryDetailsFn?: () => Promise<IGarbageCollectionSummaryDetails>,
-        usedRoutes?: string[],
     ): ISummarizerNodeWithGC {
-        assert(!this.children.has(id), "Create SummarizerNode child already exists");
+        assert(!this.children.has(id), 0x1b6 /* "Create SummarizerNode child already exists" */);
 
         const createDetails: ICreateChildDetails = this.getCreateDetailsForChild(id, createParam);
         const child = new SummarizerNodeWithGC(
             this.defaultLogger,
             summarizeInternalFn,
-            config,
+            {
+                ...config,
+                // Propagate our gcDisabled state to the child if its not explicity specified in child's config.
+                gcDisabled: config.gcDisabled ?? this.gcDisabled,
+                maxUnreferencedDurationMs: config.maxUnreferencedDurationMs ?? this.maxUnreferencedDurationMs,
+            },
             createDetails.changeSequenceNumber,
             createDetails.latestSummary,
             createDetails.initialSummary,
             this.wipSummaryLogger,
             getGCDataFn,
             getInitialGCSummaryDetailsFn,
-            usedRoutes,
         );
 
-        // If a summary is in progress, update the child's work-in-progress state.
-        if (this.isSummaryInProgress()) {
-            this.updateChildWipState(child);
-        }
+        // There may be additional state that has to be updated in this child. For example, if a summary is being
+        // tracked, the child's summary tracking state needs to be updated too.
+        this.maybeUpdateChildState(child);
 
         this.children.set(id, child);
         return child;
+    }
+
+    /**
+     * Deletes the child node with the given id.
+     */
+    public deleteChild(id: string): void {
+        this.children.delete(id);
     }
 
     /**
@@ -304,14 +370,94 @@ export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummari
         return this.usedRoutes.includes("") || this.usedRoutes.includes("/");
     }
 
+    public updateUsedRoutes(usedRoutes: string[], gcTimestamp?: number) {
+        // Sort the given routes before updating. This will ensure that the routes compared in hasUsedStateChanged()
+        // are in the same order.
+        this.usedRoutes = usedRoutes.sort();
+
+        // If GC is not disabled and we are tracking a summary, update the work-in-progress used routes so that it can
+        // be tracked for this summary.
+        if (!this.gcDisabled && this.isTrackingInProgress()) {
+            this.wipSerializedUsedRoutes = JSON.stringify(this.usedRoutes);
+        }
+
+        if (this.isReferenced()) {
+            // If this node has been unreferenced for longer than maxUnreferencedDurationMs and is being referenced,
+            // log an error as this may mean the maxUnreferencedDurationMs is not long enough.
+            this.logErrorIfInactive("inactiveObjectRevived", gcTimestamp);
+
+            // Clear unreferenced / inactive state, if any.
+            this.inactive = false;
+            this.unreferencedTimestampMs = undefined;
+            this.unreferencedTimer.clear();
+            return;
+        }
+
+        // This node is unreferenced. We need to check if this node is inative or if we need to start the unreferenced
+        // timer which would mark the node as inactive.
+
+        // If there is no timestamp when GC was run, we don't have enough information to determine whether this content
+        // should become inactive.
+        if (gcTimestamp === undefined) {
+            return;
+        }
+
+        // If unreferencedTimestampMs is not present, this node just became unreferenced. Update unreferencedTimestampMs
+        // and start the unreferenced timer.
+        // Note that it's possible this node has been unreferenced before but the unreferencedTimestampMs was not added.
+        // For example, older versions where this concept did not exist or if gcTimestamp wasn't available. In such
+        // cases, we track them as if the content just became unreferenced.
+        if (this.unreferencedTimestampMs === undefined) {
+            this.unreferencedTimestampMs = gcTimestamp;
+            this.unreferencedTimer.start();
+            return;
+        }
+
+        // If we are here, this node was unreferenced earlier.
+
+        // If it is already inactive or has an unreferenced timer running, there is no more work to be done.
+        if (this.inactive || this.unreferencedTimer.hasTimer) {
+            return;
+        }
+
+        // If it has been unreferenced longer than maxUnreferencedDurationMs, mark it as inactive. Otherwise, start the
+        // unreferenced timer for the duration left for it to reach maxUnreferencedDurationMs.
+        const currentUnreferencedDurationMs = gcTimestamp - this.unreferencedTimestampMs;
+        if (currentUnreferencedDurationMs >= this.maxUnreferencedDurationMs) {
+            this.inactive = true;
+        } else {
+            this.unreferencedTimer.start(this.maxUnreferencedDurationMs - currentUnreferencedDurationMs);
+        }
+    }
+
+    public recordChange(op: ISequencedDocumentMessage): void {
+        // If the node is changed after it is inactive, log an error as this may mean use-after-delete.
+        // Currently, we only log this error once per node per session as it's too noisy.
+        if (!this.useAfterFreeErrorLogged && this.logErrorIfInactive("inactiveObjectChanged")) {
+            this.useAfterFreeErrorLogged = true;
+        }
+        super.recordChange(op);
+    }
+
     /**
-     * Updates the work-in-progress state of the child if summary is in progress.
-     * @param child - The child node to be updated.
+     * Logs an error event if the node is inactive. This is used to identify cases where an inactive object is used.
+     * @param eventName - The name of the event to log.
+     * @param currentTimestampMs - The current time stamp. Used to report how long the object has been inactive.
+     * @returns true if we logged an error, false otherwise.
      */
-    protected updateChildWipState(child: SummarizerNodeWithGC) {
-        // Update the child's work-in-progress used routes.
-        child.wipSerializedUsedRoutes = JSON.stringify(child.usedRoutes);
-        super.updateChildWipState(child);
+    private logErrorIfInactive(eventName: string, currentTimestampMs?: number): boolean {
+        if (this.inactive) {
+            assert(
+                this.unreferencedTimestampMs !== undefined,
+                0x271 /* "Node should not become inactive without setting unreferencedTimestampMs first" */);
+            this.defaultLogger.sendErrorEvent({
+                eventName,
+                unreferencedDuratonMs: (currentTimestampMs ?? Date.now()) - this.unreferencedTimestampMs,
+                maxUnreferencedDurationMs: this.maxUnreferencedDurationMs,
+            });
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -334,6 +480,11 @@ export class SummarizerNodeWithGC extends SummarizerNode implements IRootSummari
      * was previously used and became unused (or vice versa), its used state has changed.
      */
     private hasUsedStateChanged(): boolean {
+        // If GC is disabled, we are not tracking used state, return false.
+        if (this.gcDisabled) {
+            return false;
+        }
+
         return this.referenceUsedRoutes === undefined ||
             JSON.stringify(this.usedRoutes) !== JSON.stringify(this.referenceUsedRoutes);
     }
@@ -355,8 +506,8 @@ export const createRootSummarizerNodeWithGC = (
     summarizeInternalFn: (fullTree: boolean, trackState: boolean) => Promise<ISummarizeInternalResult>,
     changeSequenceNumber: number,
     referenceSequenceNumber: number | undefined,
-    config: ISummarizerNodeConfig = {},
-    getGCDataFn?: () => Promise<IGarbageCollectionData>,
+    config: ISummarizerNodeConfigWithGC = {},
+    getGCDataFn?: (fullGC?: boolean) => Promise<IGarbageCollectionData>,
     getInitialGCSummaryDetailsFn?: () => Promise<IGarbageCollectionSummaryDetails>,
 ): IRootSummarizerNodeWithGC => new SummarizerNodeWithGC(
     logger,
@@ -368,5 +519,4 @@ export const createRootSummarizerNodeWithGC = (
     undefined /* wipSummaryLogger */,
     getGCDataFn,
     getInitialGCSummaryDetailsFn,
-    [""] /* usedRoutes */, // Add self route (empty string) because root node is always considered used.
 );

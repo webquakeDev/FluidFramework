@@ -1,11 +1,12 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { Template } from "@fluid-example/flow-util-lib";
 import { TableDocument, TableDocumentType } from "@fluid-example/table-document";
 import { DataObject, DataObjectFactory } from "@fluidframework/aqueduct";
+import { IEvent } from "@fluidframework/common-definitions";
 import { IFluidHandle } from "@fluidframework/core-interfaces";
 import { IFluidHTMLOptions, IFluidHTMLView } from "@fluidframework/view-interfaces";
 import { GridView } from "./grid";
@@ -52,8 +53,11 @@ export class TableView extends DataObject implements IFluidHTMLView {
     public render(elm: HTMLElement, options?: IFluidHTMLOptions): void {
         elm.append(this.templateRoot);
 
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        const tableDocumentHandle = this.root.get<IFluidHandle<TableDocument>>(innerDocKey)!;
+
         // eslint-disable-next-line @typescript-eslint/no-floating-promises
-        this.root.get<IFluidHandle<TableDocument>>(innerDocKey).get().then((doc) => {
+        tableDocumentHandle.get().then((doc) => {
             const grid = template.get(this.templateRoot, "grid");
             const gridView = new GridView(doc, this);
             grid.appendChild(gridView.root);
@@ -98,12 +102,11 @@ export class TableView extends DataObject implements IFluidHTMLView {
     }
 }
 
-const factory = new DataObjectFactory(
+const factory = new DataObjectFactory<TableView, undefined, undefined, IEvent>(
     tableViewType,
     TableView,
     [],
     {},
     [
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         [TableDocumentType, import("@fluid-example/table-document").then((m) => m.TableDocument.getFactory())],
     ]);

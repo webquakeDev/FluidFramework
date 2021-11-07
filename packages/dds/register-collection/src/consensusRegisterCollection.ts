@@ -1,9 +1,9 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import { assert, fromBase64ToUtf8, unreachableCase } from "@fluidframework/common-utils";
+import { assert, bufferToString, unreachableCase } from "@fluidframework/common-utils";
 import { IFluidSerializer } from "@fluidframework/core-interfaces";
 import {
     FileMode,
@@ -19,7 +19,6 @@ import {
 } from "@fluidframework/datastore-definitions";
 import { SharedObject } from "@fluidframework/shared-object-base";
 import { ConsensusRegisterCollectionFactory } from "./consensusRegisterCollectionFactory";
-import { debug } from "./debug";
 import { IConsensusRegisterCollection, ReadPolicy, IConsensusRegisterCollectionEvents } from "./interfaces";
 
 interface ILocalData<T> {
@@ -100,6 +99,7 @@ export class ConsensusRegisterCollection<T>
      * @param id - optional name of the consensus register collection
      * @returns newly create consensus register collection (but not attached yet)
      */
+    // eslint-disable-next-line @typescript-eslint/no-shadow
     public static create<T>(runtime: IFluidDataStoreRuntime, id?: string) {
         return runtime.createChannel(id, ConsensusRegisterCollectionFactory.Type) as ConsensusRegisterCollection<T>;
     }
@@ -171,7 +171,7 @@ export class ConsensusRegisterCollection<T>
 
         if (versions !== undefined) {
             // We don't support deletion. So there should be at least one value.
-            assert(versions.length > 0, "Value should be undefined or non-empty");
+            assert(versions.length > 0, 0x06c /* "Value should be undefined or non-empty" */);
 
             return versions[versions.length - 1];
         }
@@ -202,8 +202,6 @@ export class ConsensusRegisterCollection<T>
                     },
                 },
             ],
-            // eslint-disable-next-line no-null/no-null
-            id: null,
         };
 
         return tree;
@@ -213,12 +211,14 @@ export class ConsensusRegisterCollection<T>
      * {@inheritDoc @fluidframework/shared-object-base#SharedObject.loadCore}
      */
     protected async loadCore(storage: IChannelStorageService): Promise<void> {
-        const header = await storage.read(snapshotFileName);
-        const dataObj = header !== undefined ? this.parse(fromBase64ToUtf8(header), this.serializer) : {};
+        const blob = await storage.readBlob(snapshotFileName);
+        const header = bufferToString(blob, "utf8");
+        const dataObj = this.parse(header, this.serializer);
 
         for (const key of Object.keys(dataObj)) {
             assert(dataObj[key].atomic?.value.type !== "Shared",
-                "SharedObjects contained in ConsensusRegisterCollection can no longer be deserialized as of 0.17");
+                // eslint-disable-next-line max-len
+                0x06d /* "SharedObjects contained in ConsensusRegisterCollection can no longer be deserialized as of 0.17" */);
 
             this.data.set(key, dataObj[key]);
         }
@@ -226,16 +226,14 @@ export class ConsensusRegisterCollection<T>
 
     protected registerCore() { }
 
-    protected onDisconnect() {
-        debug(`ConsensusRegisterCollection ${this.id} is now disconnected`);
-    }
+    protected onDisconnect() {}
 
     protected processCore(message: ISequencedDocumentMessage, local: boolean, localOpMetadata: unknown) {
         if (message.type === MessageType.Operation) {
             const op: IIncomingRegisterOperation<T> = message.contents;
             switch (op.type) {
                 case "write": {
-                    // back-compat 0.13 refSeq
+                    // backward compatibility: File at rest written with runtime <= 0.13 do not have refSeq
                     // when the refSeq property didn't exist
                     if (op.refSeq === undefined) {
                         op.refSeq = message.referenceSequenceNumber;
@@ -243,7 +241,8 @@ export class ConsensusRegisterCollection<T>
                     // Message can be delivered with delay - e.g. resubmitted on reconnect.
                     // Use the refSeq from when the op was created, not when it was transmitted
                     const refSeqWhenCreated = op.refSeq;
-                    assert(refSeqWhenCreated <= message.referenceSequenceNumber);
+                    assert(refSeqWhenCreated <= message.referenceSequenceNumber,
+                        0x06e /* "Message's reference sequence number < op's reference sequence number!" */);
 
                     const value = incomingOpMatchesCurrentFormat(op)
                         ? this.parse(op.serializedValue, this.serializer) as T
@@ -306,7 +305,7 @@ export class ConsensusRegisterCollection<T>
             }
         }
         else {
-            assert(!!data);
+            assert(!!data, 0x06f /* "data missing for non-atomic inbound update!" */);
         }
 
         // Remove versions that were known to the remote client at the time of write
@@ -321,11 +320,12 @@ export class ConsensusRegisterCollection<T>
 
         // Asserts for data integrity
         if (!this.isAttached()) {
-            assert(refSeq === 0 && sequenceNumber === 0, "sequence numbersare expected to be 0 when unattached");
+            assert(refSeq === 0 && sequenceNumber === 0,
+                0x070 /* "sequence numbers are expected to be 0 when unattached" */);
         }
         else if (data.versions.length > 0) {
             assert(sequenceNumber > data.versions[data.versions.length - 1].sequenceNumber,
-                "Versions should naturally be ordered by sequenceNumber");
+                0x071 /* "Versions should naturally be ordered by sequenceNumber" */);
         }
 
         // Push the new element.
@@ -347,5 +347,10 @@ export class ConsensusRegisterCollection<T>
     private parse(content: string, serializer: IFluidSerializer): any {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return serializer.parse(content);
+    }
+
+    protected applyStashedOp() {
+        // empty implementation
+        return () => { };
     }
 }

@@ -1,9 +1,13 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
+import { AsyncLocalStorage } from "async_hooks";
 import { Response } from "express";
+import * as jwt from "jsonwebtoken";
+import { ITokenClaims } from "@fluidframework/protocol-definitions";
+import { NetworkError } from "@fluidframework/server-services-client";
 import { ICache, ITenantService, RestGitService, ITenantCustomDataExternal } from "../services";
 
 /**
@@ -20,12 +24,14 @@ export function handleResponse<T>(
         (result) => {
             if (cache) {
                 response.setHeader("Cache-Control", "public, max-age=31536000");
+            } else {
+                response.setHeader("Cache-Control", "no-store, max-age=0");
             }
 
             response.status(status).json(result);
         },
         (error) => {
-            response.status(400).json(error);
+            response.status(error?.code ?? 400).json(error?.message ?? error);
         });
 }
 
@@ -33,33 +39,46 @@ export async function createGitService(
     tenantId: string,
     authorization: string,
     tenantService: ITenantService,
-    cache: ICache,
+    cache?: ICache,
+    asyncLocalStorage?: AsyncLocalStorage<string>,
+    allowDisabledTenant = false,
 ): Promise<RestGitService> {
-    let token: string = null;
+    const token = parseToken(tenantId, authorization);
+    const details = await tenantService.getTenant(tenantId, token, allowDisabledTenant);
+    const customData: ITenantCustomDataExternal = details.customData;
+    const writeToExternalStorage = !!customData.externalStorageData;
+    const decoded = jwt.decode(token) as ITokenClaims;
+     const service = new RestGitService(
+         details.storage,
+         writeToExternalStorage,
+         tenantId,
+         decoded.documentId,
+         cache,
+         asyncLocalStorage);
+
+    return service;
+}
+
+export function parseToken(tenantId: string, authorization: string): string {
+    let token: string;
     if (authorization) {
         // eslint-disable-next-line @typescript-eslint/prefer-regexp-exec
         const base64TokenMatch = authorization.match(/Basic (.+)/);
         if (!base64TokenMatch) {
-            return Promise.reject("Malformed authorization token");
+            throw new NetworkError(403, "Malformed authorization token");
         }
         const encoded = Buffer.from(base64TokenMatch[1], "base64").toString();
 
         // eslint-disable-next-line @typescript-eslint/prefer-regexp-exec
         const tokenMatch = encoded.match(/(.+):(.+)/);
         if (!tokenMatch || tenantId !== tokenMatch[1]) {
-            return Promise.reject("Malformed authorization token");
+            throw new NetworkError(403, "Malformed authorization token");
         }
 
         token = tokenMatch[2];
     }
 
-    const details = await tenantService.getTenant(tenantId, token);
-    const customData: ITenantCustomDataExternal = details.customData;
-    const writeToExternalStorage = customData.externalStorageData !== undefined &&
-    customData.externalStorageData !== null;
-    const service = new RestGitService(details.storage, cache, writeToExternalStorage);
-
-    return service;
+    return token;
 }
 
 /**
@@ -80,3 +99,7 @@ export function queryParamToString(value: any): string {
     if (typeof value !== "string") { return undefined; }
     return value;
 }
+
+export const Constants = Object.freeze({
+    throttleIdSuffix: "HistorianRest",
+});

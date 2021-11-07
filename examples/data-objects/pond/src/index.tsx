@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -8,11 +8,11 @@ import {
     DataObject,
     DataObjectFactory,
 } from "@fluidframework/aqueduct";
+import { IEvent } from "@fluidframework/common-definitions";
 import { IFluidHandle } from "@fluidframework/core-interfaces";
 import { SharedDirectory } from "@fluidframework/map";
 import { HTMLViewAdapter } from "@fluidframework/view-adapters";
 import { IFluidHTMLView } from "@fluidframework/view-interfaces";
-
 import {
     Clicker,
     ExampleUsingProviders,
@@ -49,11 +49,18 @@ export class Pond extends DataObject implements IFluidHTMLView {
     }
 
     protected async hasInitialized() {
-        const clicker = await this.root.get<IFluidHandle>(Clicker.ComponentName).get();
+        const clickerHandle = this.root.get<IFluidHandle>(Clicker.ComponentName);
+        if (!clickerHandle) {
+            throw new Error("Pond not intialized correctly");
+        }
+        const clicker = await clickerHandle.get();
         this.clickerView = new HTMLViewAdapter(clicker);
 
-        const clickerUsingProviders
-            = await this.root.get<IFluidHandle>(ExampleUsingProviders.ComponentName).get();
+        const clickerUserProvidersHandle = this.root.get<IFluidHandle>(ExampleUsingProviders.ComponentName);
+        if (!clickerUserProvidersHandle) {
+            throw new Error("Pond not intialized correctly");
+        }
+        const clickerUsingProviders = await clickerUserProvidersHandle.get();
         this.clickerUsingProvidersView = new HTMLViewAdapter(clickerUsingProviders);
     }
 
@@ -98,7 +105,7 @@ export class Pond extends DataObject implements IFluidHTMLView {
 
     public static getFactory() { return Pond.factory; }
 
-    private static readonly factory = new DataObjectFactory(
+    private static readonly factory = new DataObjectFactory<Pond, undefined, undefined, IEvent>(
         PondName,
         Pond,
         [SharedDirectory.getFactory()],

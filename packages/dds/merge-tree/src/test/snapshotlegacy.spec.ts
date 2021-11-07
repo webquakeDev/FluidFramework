@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -25,7 +25,8 @@ describe("snapshot", () => {
 
         const snapshot = new SnapshotLegacy(client1.mergeTree, client1.logger);
         snapshot.extractSync();
-        const snapshotTree = snapshot.emit([], serializer);
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        const snapshotTree = snapshot.emit([], serializer, undefined!);
         const services = new MockStorage(snapshotTree);
 
         const client2 = new TestClient(undefined);
@@ -57,7 +58,8 @@ describe("snapshot", () => {
             const client2 = clients[i + 1];
             const snapshot = new SnapshotLegacy(client1.mergeTree, client1.logger);
             snapshot.extractSync();
-            const snapshotTree = snapshot.emit([], serializer);
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+            const snapshotTree = snapshot.emit([], serializer, undefined!);
             const services = new MockStorage(snapshotTree);
             const runtime: Partial<IFluidDataStoreRuntime> = {
                 logger: client2.logger,

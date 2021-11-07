@@ -1,15 +1,16 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { IFluidHandle } from "@fluidframework/core-interfaces";
 import { DataObject, DataObjectFactory } from "@fluidframework/aqueduct";
+import { IEvent } from "@fluidframework/common-definitions";
 import {
     IFluidLastEditedTracker,
     IProvideFluidLastEditedTracker,
     LastEditedTrackerDataObject,
-} from "@fluidframework/last-edited-experimental";
+} from "@fluid-experimental/last-edited";
 import { IFluidHTMLView, IProvideFluidHTMLView } from "@fluidframework/view-interfaces";
 import { Vltava } from "../vltava";
 
@@ -30,15 +31,16 @@ export class Anchor extends DataObject implements IProvideFluidHTMLView, IProvid
         return this.defaultFluidObjectInternal;
     }
 
-    private static readonly factory = new DataObjectFactory(
-        "anchor",
-        Anchor,
-        [],
-        {},
-        [
-            LastEditedTrackerDataObject.getFactory().registryEntry,
-            Vltava.getFactory().registryEntry,
-        ],
+    private static readonly factory =
+        new DataObjectFactory<Anchor, undefined, undefined, IEvent>(
+            "anchor",
+            Anchor,
+            [],
+            {},
+            [
+                LastEditedTrackerDataObject.getFactory().registryEntry,
+                Vltava.getFactory().registryEntry,
+            ],
         );
 
     public static getFactory() {
@@ -65,11 +67,11 @@ export class Anchor extends DataObject implements IProvideFluidHTMLView, IProvid
 
     protected async hasInitialized() {
         this.defaultFluidObjectInternal =
-            (await this.root.get<IFluidHandle>(this.defaultFluidObjectId).get())
-                .IFluidHTMLView;
+            (await this.root.get<IFluidHandle>(this.defaultFluidObjectId)?.get())
+                ?.IFluidHTMLView;
 
         this.lastEditedFluidObject =
-            (await this.root.get<IFluidHandle>(this.lastEditedFluidObjectId).get())
-                .IFluidLastEditedTracker;
+            (await this.root.get<IFluidHandle>(this.lastEditedFluidObjectId)?.get())
+                ?.IFluidLastEditedTracker;
     }
 }

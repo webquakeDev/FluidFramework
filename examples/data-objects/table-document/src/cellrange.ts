@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -21,12 +21,12 @@ export function colNameToIndex(colName: string) {
 export function colIndexToName(colIndex: number) {
     let name = "";
 
+    let i = colIndex;
     do {
-        const mod = colIndex % 26;
+        const mod = i % 26;
         name = `${String.fromCharCode(65 + mod)}${name}`;
-        // eslint-disable-next-line no-param-reassign
-        colIndex = Math.trunc(colIndex / 26) - 1;
-    } while (colIndex >= 0);
+        i = Math.trunc(i / 26) - 1;
+    } while (i >= 0);
 
     return name;
 }
@@ -47,7 +47,7 @@ export class CellRange {
         private readonly resolve: (localRef: LocalReference) => { row: number; col: number },
     ) {
         // Ensure CellInterval was not created with a null/undefined interval.
-        assert(!!interval);
+        assert(!!interval, "CellInterval created with bad interval!");
     }
 
     public getRange() {

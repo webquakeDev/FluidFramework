@@ -1,9 +1,8 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import { parse } from "url";
 import { assert } from "@fluidframework/common-utils";
 import {
     IDocumentService,
@@ -11,18 +10,30 @@ import {
     IResolvedUrl,
 } from "@fluidframework/driver-definitions";
 import { ITelemetryBaseLogger } from "@fluidframework/common-definitions";
-import { IErrorTrackingService, ISummaryTree } from "@fluidframework/protocol-definitions";
-import { ICredentials, IGitCache } from "@fluidframework/server-services-client";
+import { ISnapshotTree, ISummaryTree } from "@fluidframework/protocol-definitions";
 import {
     ensureFluidResolvedUrl,
     getDocAttributesFromProtocolSummary,
     getQuorumValuesFromProtocolSummary,
+    RateLimiter,
 } from "@fluidframework/driver-utils";
-import Axios from "axios";
+import { ChildLogger } from "@fluidframework/telemetry-utils";
 import { DocumentService } from "./documentService";
-import { DocumentService2 } from "./documentService2";
-import { DefaultErrorTracking } from "./errorTracking";
+import { IRouterliciousDriverPolicies } from "./policies";
 import { ITokenProvider } from "./tokens";
+import { RouterliciousOrdererRestWrapper } from "./restWrapper";
+import { convertSummaryToCreateNewSummary } from "./createNewUtils";
+import { parseFluidUrl, replaceDocumentIdInPath } from "./urlUtils";
+import { InMemoryCache } from "./cache";
+
+const defaultRouterliciousDriverPolicies: IRouterliciousDriverPolicies = {
+    enablePrefetch: true,
+    maxConcurrentStorageRequests: 100,
+    maxConcurrentOrdererRequests: 100,
+    aggregateBlobsSmallerThanBytes: undefined,
+    enableWholeSummaryUpload: false,
+    enableRestLess: false,
+};
 
 /**
  * Factory for creating the routerlicious document service. Use this if you want to
@@ -30,29 +41,34 @@ import { ITokenProvider } from "./tokens";
  */
 export class RouterliciousDocumentServiceFactory implements IDocumentServiceFactory {
     public readonly protocolName = "fluid:";
+    private readonly driverPolicies: IRouterliciousDriverPolicies;
+    private readonly blobCache = new InMemoryCache<ArrayBufferLike>();
+    private readonly snapshotTreeCache = new InMemoryCache<ISnapshotTree>();
+
     constructor(
         private readonly tokenProvider: ITokenProvider,
-        private readonly useDocumentService2: boolean = false,
-        private readonly errorTracking: IErrorTrackingService = new DefaultErrorTracking(),
-        private readonly disableCache: boolean = false,
-        private readonly historianApi: boolean = true,
-        private readonly gitCache: IGitCache | undefined = undefined,
-        private readonly credentials?: ICredentials,
+        driverPolicies: Partial<IRouterliciousDriverPolicies> = {},
     ) {
+        this.driverPolicies = {
+            ...defaultRouterliciousDriverPolicies,
+            ...driverPolicies,
+        };
     }
 
     public async createContainer(
-        createNewSummary: ISummaryTree,
+        createNewSummary: ISummaryTree | undefined,
         resolvedUrl: IResolvedUrl,
         logger?: ITelemetryBaseLogger,
     ): Promise<IDocumentService> {
         ensureFluidResolvedUrl(resolvedUrl);
-        assert(!!resolvedUrl.endpoints.ordererUrl);
-        const parsedUrl = parse(resolvedUrl.url);
+        assert(!!createNewSummary, 0x204 /* "create empty file not supported" */);
+        assert(!!resolvedUrl.endpoints.ordererUrl, 0x0b2 /* "Missing orderer URL!" */);
+        const parsedUrl = parseFluidUrl(resolvedUrl.url);
         if (!parsedUrl.pathname) {
             throw new Error("Parsed url should contain tenant and doc Id!!");
         }
-        const [, tenantId, id] = parsedUrl.pathname.split("/");
+        const [, tenantId] = parsedUrl.pathname.split("/");
+
         const protocolSummary = createNewSummary.tree[".protocol"] as ISummaryTree;
         const appSummary = createNewSummary.tree[".app"] as ISummaryTree;
         if (!(protocolSummary && appSummary)) {
@@ -60,15 +76,47 @@ export class RouterliciousDocumentServiceFactory implements IDocumentServiceFact
         }
         const documentAttributes = getDocAttributesFromProtocolSummary(protocolSummary);
         const quorumValues = getQuorumValuesFromProtocolSummary(protocolSummary);
-        await Axios.post(
-            `${resolvedUrl.endpoints.ordererUrl}/documents/${tenantId}`,
+
+        const logger2 = ChildLogger.create(logger, "RouterliciousDriver");
+        const rateLimiter = new RateLimiter(this.driverPolicies.maxConcurrentOrdererRequests);
+        const ordererRestWrapper = await RouterliciousOrdererRestWrapper.load(
+            tenantId,
+            undefined,
+            this.tokenProvider,
+            logger2,
+            rateLimiter,
+            this.driverPolicies.enableRestLess,
+            resolvedUrl.endpoints.ordererUrl,
+        );
+        // the backend responds with the actual document ID associated with the new container.
+        const documentId = await ordererRestWrapper.post<string>(
+            `/documents/${tenantId}`,
             {
-                id,
-                summary: appSummary,
+                summary: convertSummaryToCreateNewSummary(appSummary),
                 sequenceNumber: documentAttributes.sequenceNumber,
                 values: quorumValues,
-            });
-        return this.createDocumentService(resolvedUrl, logger);
+            },
+        );
+        parsedUrl.set("pathname", replaceDocumentIdInPath(parsedUrl.pathname, documentId));
+        const deltaStorageUrl = resolvedUrl.endpoints.deltaStorageUrl;
+        if (!deltaStorageUrl) {
+            throw new Error(
+                `All endpoints urls must be provided. [deltaStorageUrl:${deltaStorageUrl}]`);
+        }
+        const parsedDeltaStorageUrl = new URL(deltaStorageUrl);
+        parsedDeltaStorageUrl.pathname = replaceDocumentIdInPath(parsedDeltaStorageUrl.pathname, documentId);
+
+        return this.createDocumentService(
+            {
+                ...resolvedUrl,
+                url: parsedUrl.toString(),
+                id: documentId,
+                endpoints: {
+                    ...resolvedUrl.endpoints,
+                    deltaStorageUrl: parsedDeltaStorageUrl.toString(),
+                },
+            },
+            logger);
     }
 
     /**
@@ -92,40 +140,26 @@ export class RouterliciousDocumentServiceFactory implements IDocumentServiceFact
                 `All endpoints urls must be provided. [ordererUrl:${ordererUrl}][deltaStorageUrl:${deltaStorageUrl}]`);
         }
 
-        const parsedUrl = parse(fluidResolvedUrl.url);
-        const [, tenantId, documentId] = parsedUrl.pathname!.split("/");
+        const parsedUrl = parseFluidUrl(fluidResolvedUrl.url);
+        const [, tenantId, documentId] = parsedUrl.pathname.split("/");
         if (!documentId || !tenantId) {
             throw new Error(
                 `Couldn't parse documentId and/or tenantId. [documentId:${documentId}][tenantId:${tenantId}]`);
         }
 
-        if (this.useDocumentService2) {
-            return new DocumentService2(
-                fluidResolvedUrl,
-                ordererUrl,
-                deltaStorageUrl,
-                storageUrl,
-                this.errorTracking,
-                this.disableCache,
-                this.historianApi,
-                this.credentials,
-                this.tokenProvider,
-                tenantId,
-                documentId);
-        } else {
-            return new DocumentService(
-                fluidResolvedUrl,
-                ordererUrl,
-                deltaStorageUrl,
-                storageUrl,
-                this.errorTracking,
-                this.disableCache,
-                this.historianApi,
-                this.credentials,
-                this.gitCache,
-                this.tokenProvider,
-                tenantId,
-                documentId);
-        }
+        const logger2 = ChildLogger.create(logger, "RouterliciousDriver");
+
+        return new DocumentService(
+            fluidResolvedUrl,
+            ordererUrl,
+            deltaStorageUrl,
+            storageUrl,
+            logger2,
+            this.tokenProvider,
+            tenantId,
+            documentId,
+            this.driverPolicies,
+            this.blobCache,
+            this.snapshotTreeCache);
     }
 }

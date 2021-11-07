@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -17,9 +17,6 @@ import {
 import {
     ISerializableValue,
     ISerializedValue,
-    IValueOpEmitter,
-    IValueOperation,
-    IValueType,
 } from "./interfaces";
 
 /**
@@ -96,70 +93,10 @@ export class PlainLocalValue implements ILocalValue {
 }
 
 /**
- * Manages a contained value type.
- *
- * @privateRemarks
- * TODO: Should maybe be a generic
- *
- * @alpha
- */
-export class ValueTypeLocalValue implements ILocalValue {
-    /**
-     * Create a new ValueTypeLocalValue.
-     * @param value - The instance of the value type stored within
-     * @param valueType - The type object of the value type stored within
-     */
-    constructor(public readonly value: any, private readonly valueType: IValueType<any>) {
-    }
-
-    /**
-     * {@inheritDoc ILocalValue."type"}
-     */
-    public get type(): string {
-        return this.valueType.name;
-    }
-
-    /**
-     * {@inheritDoc ILocalValue.makeSerialized}
-     */
-    public makeSerialized(
-        serializer: IFluidSerializer,
-        bind: IFluidHandle,
-    ): ISerializedValue {
-        const storedValueType = this.valueType.factory.store(this.value);
-        const value = serializeHandles(storedValueType, serializer, bind);
-
-        return {
-            type: this.type,
-            value,
-        };
-    }
-
-    /**
-     * Get the handler for a given op of this value type.
-     * @param opName - The name of the operation that needs processing
-     * @returns The object which can process the given op
-     */
-    public getOpHandler(opName: string): IValueOperation<any> {
-        const handler = this.valueType.ops.get(opName);
-        if (!handler) {
-            throw new Error("Unknown type message");
-        }
-
-        return handler;
-    }
-}
-
-/**
  * A LocalValueMaker enables a container type DDS to produce and store local values with minimal awareness of how
  * those objects are stored, serialized, and deserialized.
  */
 export class LocalValueMaker {
-    /**
-     * The value types this maker is able to produce.
-     */
-    private readonly valueTypes = new Map<string, IValueType<any>>();
-
     /**
      * Create a new LocalValueMaker.
      * @param serializer - The serializer to serialize / parse handles.
@@ -168,44 +105,23 @@ export class LocalValueMaker {
     }
 
     /**
-     * Register a value type this maker will be able to produce.
-     * @param type - The value type to register
-     * @alpha
-     */
-    public registerValueType<T>(type: IValueType<T>) {
-        this.valueTypes.set(type.name, type);
-    }
-
-    /**
      * Create a new local value from an incoming serialized value.
      * @param serializable - The serializable value to make local
-     * @param emitter - The value op emitter, if the serializable is a value type
      */
-    public fromSerializable(serializable: ISerializableValue, emitter?: IValueOpEmitter): ILocalValue {
-        if (serializable.type === ValueType[ValueType.Plain] || serializable.type === ValueType[ValueType.Shared]) {
-            // Migrate from old shared value to handles
-            if (serializable.type === ValueType[ValueType.Shared]) {
-                serializable.type = ValueType[ValueType.Plain];
-                const handle: ISerializedHandle = {
-                    type: "__fluid_handle__",
-                    url: serializable.value as string,
-                };
-                serializable.value = handle;
-            }
-
-            const translatedValue = parseHandles(serializable.value, this.serializer);
-
-            return new PlainLocalValue(translatedValue);
-        } else if (this.valueTypes.has(serializable.type)) {
-            const valueType = this.valueTypes.get(serializable.type);
-
-            serializable.value = parseHandles(serializable.value, this.serializer);
-
-            const localValue = valueType.factory.load(emitter, serializable.value);
-            return new ValueTypeLocalValue(localValue, valueType);
-        } else {
-            throw new Error(`Unknown value type "${serializable.type}"`);
+    public fromSerializable(serializable: ISerializableValue): ILocalValue {
+        // Migrate from old shared value to handles
+        if (serializable.type === ValueType[ValueType.Shared]) {
+            serializable.type = ValueType[ValueType.Plain];
+            const handle: ISerializedHandle = {
+                type: "__fluid_handle__",
+                url: serializable.value as string,
+            };
+            serializable.value = handle;
         }
+
+        const translatedValue = parseHandles(serializable.value, this.serializer);
+
+        return new PlainLocalValue(translatedValue);
     }
 
     /**
@@ -219,36 +135,5 @@ export class LocalValueMaker {
         }
 
         return new PlainLocalValue(value);
-    }
-
-    /**
-     * Create a new local value containing a value type.
-     * @param type - The type of the value type to create
-     * @param emitter - The IValueOpEmitter object that the new value type will use to emit ops
-     * @param params - The initialization arguments for the value type
-     * @returns An ILocalValue containing the new value type
-     * @alpha
-     */
-    public makeValueType(type: string, emitter: IValueOpEmitter, params: any): ILocalValue {
-        const valueType = this.loadValueType(params, type, emitter);
-        return new ValueTypeLocalValue(valueType, this.valueTypes.get(type));
-    }
-
-    /**
-     * Create a new value type.
-     * @param params - The initialization arguments for the value type
-     * @param type - The type of value type to create
-     * @param emitter - The IValueOpEmitter object that the new value type will use to emit ops
-     * @returns The new value type
-     * @alpha
-     */
-    private loadValueType(params: any, type: string, emitter: IValueOpEmitter): any {
-        const valueType = this.valueTypes.get(type);
-        if (!valueType) {
-            throw new Error(`Unknown type '${type}' specified`);
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-        return valueType.factory.load(emitter, params);
     }
 }

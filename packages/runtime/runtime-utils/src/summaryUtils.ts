@@ -1,10 +1,11 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import {
     assert,
+    bufferToString,
     fromBase64ToUtf8,
     IsoBuffer,
     Uint8ArrayToString,
@@ -16,10 +17,8 @@ import {
     SummaryType,
     ISummaryTree,
     SummaryObject,
-    IBlob,
     ISummaryBlob,
     TreeEntry,
-    IAttachment,
     ITreeEntry,
     ISnapshotTree,
 } from "@fluidframework/protocol-definitions";
@@ -36,19 +35,38 @@ export function mergeStats(...stats: ISummaryStats[]): ISummaryStats {
         blobNodeCount: 0,
         handleNodeCount: 0,
         totalBlobSize: 0,
+        unreferencedBlobSize: 0,
     };
     for (const stat of stats) {
         results.treeNodeCount += stat.treeNodeCount;
         results.blobNodeCount += stat.blobNodeCount;
         results.handleNodeCount += stat.handleNodeCount;
         results.totalBlobSize += stat.totalBlobSize;
+        results.unreferencedBlobSize += stat.unreferencedBlobSize;
     }
     return results;
 }
 
+export function utf8ByteLength(str: string): number {
+  // returns the byte length of an utf8 string
+  let s = str.length;
+  for (let i = str.length - 1; i >= 0; i--) {
+    const code = str.charCodeAt(i);
+    if (code > 0x7f && code <= 0x7ff) {
+        s++;
+    } else if (code > 0x7ff && code <= 0xffff) {
+        s += 2;
+    }
+    if (code >= 0xDC00 && code <= 0xDFFF) {
+        i--; // trail surrogate
+    }
+  }
+  return s;
+}
+
 export function getBlobSize(content: ISummaryBlob["content"]): number {
     if (typeof content === "string") {
-        return IsoBuffer.from(content, "utf8").byteLength;
+        return utf8ByteLength(content);
     } else {
         return content.byteLength;
     }
@@ -130,7 +148,11 @@ export class SummaryTreeBuilder implements ISummaryTreeWithStats {
         }, key, content);
     }
 
-    public addHandle(key: string, handleType: SummaryType, handle: string): void {
+    public addHandle(
+        key: string,
+        handleType: SummaryType.Tree | SummaryType.Blob | SummaryType.Attachment,
+        handle: string): void
+    {
         this.summaryTree[key] = {
             type: SummaryType.Handle,
             handleType,
@@ -166,7 +188,7 @@ export function convertToSummaryTreeWithStats(
     for (const entry of snapshot.entries) {
         switch (entry.type) {
             case TreeEntry.Blob: {
-                const blob = entry.value as IBlob;
+                const blob = entry.value;
                 let content: string | Uint8Array;
                 if (blob.encoding === "base64") {
                     content = IsoBuffer.from(blob.contents, "base64");
@@ -179,7 +201,7 @@ export function convertToSummaryTreeWithStats(
 
             case TreeEntry.Tree: {
                 const subtree = convertToSummaryTree(
-                    entry.value as ITree,
+                    entry.value,
                     fullTree);
                 builder.addWithStats(entry.path, subtree);
 
@@ -187,21 +209,20 @@ export function convertToSummaryTreeWithStats(
             }
 
             case TreeEntry.Attachment: {
-                const id = (entry.value as IAttachment).id;
+                const id = entry.value.id;
                 builder.addAttachment(id);
 
                 break;
             }
-
-            case TreeEntry.Commit:
-                throw new Error("Should not have Commit TreeEntry in summary");
 
             default:
                 throw new Error("Unexpected TreeEntry type");
         }
     }
 
-    return builder.getSummaryTree();
+    const summaryTree = builder.getSummaryTree();
+    summaryTree.summary.unreferenced = snapshot.unreferenced;
+    return summaryTree;
 }
 
 /**
@@ -238,15 +259,24 @@ export function convertToSummaryTree(
 export function convertSnapshotTreeToSummaryTree(
     snapshot: ISnapshotTree,
 ): ISummaryTreeWithStats {
-    assert(Object.keys(snapshot.commits).length === 0, "There should not be commit tree entries in snapshot");
+    assert(Object.keys(snapshot.commits).length === 0,
+        0x19e /* "There should not be commit tree entries in snapshot" */);
 
     const builder = new SummaryTreeBuilder();
-    for (const [key, value] of Object.entries(snapshot.blobs)) {
-        // The entries in blobs are supposed to be blobPath -> blobId and blobId -> blobValue
-        // and we want to push blobPath to blobValue in tree entries.
-        if (snapshot.blobs[value] !== undefined) {
-            const decoded = fromBase64ToUtf8(snapshot.blobs[value]);
-            builder.addBlob(key, decoded);
+    for (const [path, id] of Object.entries(snapshot.blobs)) {
+        let decoded: string | undefined;
+        if ((snapshot as any).blobsContents !== undefined) {
+            const content: ArrayBufferLike = (snapshot as any).blobsContents[id];
+            if (content !== undefined) {
+                decoded = bufferToString(content, "utf-8");
+            }
+        // 0.44 back-compat We still put contents in same blob for back-compat so need to add blob
+        // only for blobPath -> blobId mapping and not for blobId -> blob value contents.
+        } else if (snapshot.blobs[id] !== undefined) {
+            decoded = fromBase64ToUtf8(snapshot.blobs[id]);
+        }
+        if (decoded !== undefined) {
+            builder.addBlob(path, decoded);
         }
     }
 
@@ -254,32 +284,9 @@ export function convertSnapshotTreeToSummaryTree(
         const subtree = convertSnapshotTreeToSummaryTree(tree);
         builder.addWithStats(key, subtree);
     }
-    return builder.getSummaryTree();
-}
 
-/**
- * Utility to convert serialized snapshot taken in detached container to format where we can use it to
- * attach the container.
- * @param serializedSnapshotTree - serialized snapshot tree to be converted to summary tree for attach.
- */
-export function convertContainerToDriverSerializedFormat(
-    serializedSnapshotTree: string,
-): ISummaryTree {
-    const snapshotTree: ISnapshotTree = JSON.parse(serializedSnapshotTree);
-    const summaryTree = convertSnapshotTreeToSummaryTree(snapshotTree).summary;
-    const appSummaryTree: ISummaryTree = {
-        type: SummaryType.Tree,
-        tree: {},
-    };
-    const entries = Object.entries(summaryTree.tree);
-    for (const [key, subTree] of entries) {
-        if (key !== ".protocol") {
-            appSummaryTree.tree[key] = subTree;
-            // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-            delete summaryTree.tree[key];
-        }
-    }
-    summaryTree.tree[".app"] = appSummaryTree;
+    const summaryTree = builder.getSummaryTree();
+    summaryTree.summary.unreferenced = snapshot.unreferenced;
     return summaryTree;
 }
 
@@ -293,7 +300,7 @@ export function convertSummaryTreeToITree(summaryTree: ISummaryTree): ITree {
         switch (value.type) {
             case SummaryType.Blob: {
                 let parsedContent: string;
-                let encoding: string = "utf-8";
+                let encoding: "utf-8" | "base64" = "utf-8";
                 if (typeof value.content === "string") {
                     parsedContent = value.content;
                 } else {
@@ -314,10 +321,6 @@ export function convertSummaryTreeToITree(summaryTree: ISummaryTree): ITree {
                 break;
             }
 
-            case SummaryType.Commit: {
-                throw new Error("Should not have Commit type in summary tree");
-            }
-
             case SummaryType.Handle: {
                 throw new Error("Should not have Handle type in summary tree");
             }
@@ -328,7 +331,6 @@ export function convertSummaryTreeToITree(summaryTree: ISummaryTree): ITree {
     }
     return {
         entries,
-        // eslint-disable-next-line no-null/no-null
-        id: null,
+        unreferenced: summaryTree.unreferenced,
     };
 }

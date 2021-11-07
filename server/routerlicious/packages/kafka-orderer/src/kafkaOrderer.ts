@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -16,7 +16,6 @@ import * as core from "@fluidframework/server-services-core";
 
 export class KafkaOrdererConnection implements core.IOrdererConnection {
     public static async create(
-        existing: boolean,
         producer: core.IProducer,
         tenantId: string,
         documentId: string,
@@ -27,7 +26,6 @@ export class KafkaOrdererConnection implements core.IOrdererConnection {
     ): Promise<KafkaOrdererConnection> {
         // Create the connection
         return new KafkaOrdererConnection(
-            existing,
             producer,
             tenantId,
             documentId,
@@ -37,13 +35,7 @@ export class KafkaOrdererConnection implements core.IOrdererConnection {
             serviceConfiguration);
     }
 
-    // Back-compat, removal tracked with issue #4346
-    public get parentBranch(): null {
-        return null;
-    }
-
     constructor(
-        public readonly existing: boolean,
         private readonly producer: core.IProducer,
         public readonly tenantId: string,
         public readonly documentId: string,
@@ -108,7 +100,7 @@ export class KafkaOrdererConnection implements core.IOrdererConnection {
     /**
      * Sends the client leave op for this connection
      */
-    public async disconnect(): Promise<void> {
+    public async disconnect(clientLeaveMessageServerMetadata?: any): Promise<void> {
         const operation: IDocumentSystemMessage = {
             clientSequenceNumber: -1,
             contents: null,
@@ -116,6 +108,7 @@ export class KafkaOrdererConnection implements core.IOrdererConnection {
             referenceSequenceNumber: -1,
             traces: this.serviceConfiguration.enableTraces ? [] : undefined,
             type: MessageType.ClientLeave,
+            serverMetadata: clientLeaveMessageServerMetadata,
         };
         const message: core.IRawOperationMessage = {
             clientId: null,
@@ -166,8 +159,6 @@ export class KafkaOrderer implements core.IOrderer {
         return new KafkaOrderer(producer, tenantId, documentId, maxMessageSize, serviceConfiguration);
     }
 
-    private existing: boolean;
-
     constructor(
         private readonly producer: core.IProducer,
         private readonly tenantId: string,
@@ -180,11 +171,8 @@ export class KafkaOrderer implements core.IOrderer {
     public async connect(
         socket: core.IWebSocket,
         clientId: string,
-        client: IClient,
-        details: core.IDocumentDetails): Promise<core.IOrdererConnection> {
-        this.existing = details.existing;
+        client: IClient): Promise<core.IOrdererConnection> {
         const connection = KafkaOrdererConnection.create(
-            this.existing,
             this.producer,
             this.tenantId,
             this.documentId,
@@ -192,9 +180,6 @@ export class KafkaOrderer implements core.IOrderer {
             this.maxMessageSize,
             clientId,
             this.serviceConfiguration);
-
-        // Document is now existing regardless of the original value
-        this.existing = true;
 
         return connection;
     }
@@ -217,8 +202,10 @@ export class KafkaOrdererFactory {
 
     public async create(tenantId: string, documentId: string): Promise<core.IOrderer> {
         const fullId = `${tenantId}/${documentId}`;
-        if (!this.ordererMap.has(fullId)) {
-            const orderer = KafkaOrderer.create(
+
+        let orderer = this.ordererMap.get(fullId);
+        if (orderer === undefined) {
+            orderer = KafkaOrderer.create(
                 this.producer,
                 tenantId,
                 documentId,
@@ -227,6 +214,10 @@ export class KafkaOrdererFactory {
             this.ordererMap.set(fullId, orderer);
         }
 
-        return this.ordererMap.get(fullId);
+        return orderer;
+    }
+
+    public delete(tenantId: string, documentId: string): void {
+        this.ordererMap.delete(`${tenantId}/${documentId}`);
     }
 }

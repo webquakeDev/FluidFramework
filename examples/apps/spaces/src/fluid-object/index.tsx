@@ -1,9 +1,9 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import React from "react";
+import React, { ReactElement } from "react";
 import ReactDOM from "react-dom";
 import { Layout } from "react-grid-layout";
 import {
@@ -15,7 +15,7 @@ import {
     IRequest,
     IResponse,
 } from "@fluidframework/core-interfaces";
-import { AsSerializable } from "@fluidframework/datastore-definitions";
+import { Serializable } from "@fluidframework/datastore-definitions";
 import { IFluidHTMLView } from "@fluidframework/view-interfaces";
 
 import { RequestParser } from "@fluidframework/runtime-utils";
@@ -39,7 +39,7 @@ export interface ISpacesItem {
     /**
      * The unknown blob of data that backs the instance of the item.  Probably contains handles, etc.
      */
-    serializableObject: AsSerializable<any>;
+    serializableObject: Serializable;
     /**
      * A key matching an entry in the spacesItemMap, which we'll use to pair the unknown blob with an entry that
      * knows how to deal with it.
@@ -52,7 +52,6 @@ export interface ISpacesItem {
  */
 export class Spaces extends DataObject implements IFluidHTMLView {
     private storageComponent: SpacesStorage | undefined;
-    private baseUrl: string | undefined;
 
     public static get ComponentName() { return "@fluid-example/spaces"; }
 
@@ -100,10 +99,6 @@ export class Spaces extends DataObject implements IFluidHTMLView {
      * Will return a new Spaces View
      */
     public render(div: HTMLElement) {
-        if (this.storageComponent === undefined) {
-            throw new Error("Spaces can't render, storage not found");
-        }
-
         const addItem = (type: string) => {
             this.createAndStoreItem(type, { w: 20, h: 5, x: 0, y: 0 })
                 .catch((error) => {
@@ -111,16 +106,35 @@ export class Spaces extends DataObject implements IFluidHTMLView {
                 });
         };
 
+        const View: (props: any) => ReactElement = () => {
+            if (this.storageComponent === undefined) {
+                throw new Error("Spaces can't render, storage not found");
+            }
+            const [baseUrl, setBaseUrl] = React.useState<string | undefined>("");
+            React.useEffect(() => {
+                const getBaseUrl = async () => {
+                    setBaseUrl(await this.context.getAbsoluteUrl(this.handle.absolutePath));
+                };
+
+                getBaseUrl().catch((error) => {
+                    console.error(error);
+                });
+            });
+            return (
+                <SpacesView
+                    itemMap={spacesItemMap}
+                    storage={this.storageComponent}
+                    addItem={addItem}
+                    templates={[...Object.keys(templateDefinitions)]}
+                    applyTemplate={this.applyTemplate}
+                    getViewForItem={this.getViewForItem}
+                    getUrlForItem={(itemId: string) => `#${baseUrl}/${itemId}`}
+                />
+            );
+        };
+
         ReactDOM.render(
-            <SpacesView
-                itemMap={spacesItemMap}
-                storage={this.storageComponent}
-                addItem={addItem}
-                templates={[...Object.keys(templateDefinitions)]}
-                applyTemplate={this.applyTemplate}
-                getViewForItem={this.getViewForItem}
-                getUrlForItem={(itemId: string) => `${this.baseUrl}/${itemId}`}
-            />,
+            <View />,
             div,
         );
     }
@@ -138,9 +152,6 @@ export class Spaces extends DataObject implements IFluidHTMLView {
     protected async hasInitialized() {
         this.storageComponent =
             await this.root.get<IFluidHandle<SpacesStorage>>(SpacesStorageKey)?.get();
-
-        // We'll cache this async result on initialization, since we need it synchronously during render.
-        this.baseUrl = await this.context.getAbsoluteUrl(this.handle.absolutePath);
     }
 
     private readonly applyTemplate = async (template: string) => {

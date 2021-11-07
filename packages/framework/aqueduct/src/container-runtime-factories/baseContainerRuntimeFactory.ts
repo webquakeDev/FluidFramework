@@ -1,9 +1,9 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import { IContainerContext, IRuntime, IRuntimeFactory } from "@fluidframework/container-definitions";
+import { IContainerContext } from "@fluidframework/container-definitions";
 import {
     IContainerRuntimeOptions,
     FluidDataStoreRegistry,
@@ -22,18 +22,22 @@ import {
     IProvideFluidDataStoreRegistry,
     NamedFluidDataStoreRegistryEntries,
 } from "@fluidframework/runtime-definitions";
-import { DependencyContainer, DependencyContainerRegistry } from "@fluidframework/synthesize";
+import {
+    DependencyContainer,
+    DependencyContainerRegistry,
+    IProvideFluidDependencySynthesizer,
+} from "@fluidframework/synthesize";
+import { RuntimeFactoryHelper } from "@fluidframework/runtime-utils";
 
 /**
  * BaseContainerRuntimeFactory produces container runtimes with a given data store and service registry, as well as
  * given request handlers.  It can be subclassed to implement a first-time initialization procedure for the containers
  * it creates.
  */
-export class BaseContainerRuntimeFactory implements
-    IProvideFluidDataStoreRegistry,
-    IRuntimeFactory {
+export class BaseContainerRuntimeFactory
+    extends RuntimeFactoryHelper
+    implements IProvideFluidDataStoreRegistry {
     public get IFluidDataStoreRegistry() { return this.registry; }
-    public get IRuntimeFactory() { return this; }
     private readonly registry: IFluidDataStoreRegistry;
 
     /**
@@ -48,45 +52,44 @@ export class BaseContainerRuntimeFactory implements
         private readonly requestHandlers: RuntimeRequestHandler[] = [],
         private readonly runtimeOptions?: IContainerRuntimeOptions,
     ) {
+        super();
         this.registry = new FluidDataStoreRegistry(registryEntries);
     }
 
-    /**
-     * {@inheritDoc @fluidframework/container-definitions#IRuntimeFactory.instantiateRuntime}
-     */
-    public async instantiateRuntime(
+    public async instantiateFirstTime(runtime: ContainerRuntime): Promise<void> {
+        await this.containerInitializingFirstTime(runtime);
+        await this.containerHasInitialized(runtime);
+    }
+
+    public async instantiateFromExisting(runtime: ContainerRuntime): Promise<void> {
+        await this.containerHasInitialized(runtime);
+    }
+
+    public async preInitialize(
         context: IContainerContext,
-    ): Promise<IRuntime> {
-        const parentDependencyContainer = context.scope.IFluidDependencySynthesizer;
+        existing: boolean,
+    ): Promise<ContainerRuntime> {
+        const scope: Partial<IProvideFluidDependencySynthesizer> = context.scope;
+        const parentDependencyContainer = scope.IFluidDependencySynthesizer;
         const dc = new DependencyContainer(parentDependencyContainer);
         for (const entry of Array.from(this.providerEntries)) {
             dc.register(entry.type, entry.provider);
         }
-
-        // Create a scope object that passes through everything except for IFluidDependencySynthesizer
-        // which we will replace with the new one we just created.
-        const scope: any = context.scope;
         scope.IFluidDependencySynthesizer = dc;
 
-        const runtime = await ContainerRuntime.load(
+        const runtime: ContainerRuntime = await ContainerRuntime.load(
             context,
             this.registryEntries,
             buildRuntimeRequestHandler(
                 ...this.requestHandlers,
                 innerRequestHandler),
             this.runtimeOptions,
-            scope);
+            scope,
+            existing,
+        );
 
         // we register the runtime so developers of providers can use it in the factory pattern.
         dc.register(IContainerRuntime, runtime);
-
-        if (!runtime.existing) {
-            // If it's the first time through.
-            await this.containerInitializingFirstTime(runtime);
-        }
-
-        // This always gets called at the end of initialize on first time or from existing.
-        await this.containerHasInitialized(runtime);
 
         return runtime;
     }

@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -28,13 +28,16 @@ let odspAuthLock: Promise<void> | undefined;
 const getThisOrigin = (options: RouteOptions): string => `http://localhost:${options.port}`;
 
 export const before = async (app: express.Application) => {
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     app.get("/getclientsidewebparts", async (req, res) => res.send(await createManifestResponse()));
     app.get("/", (req, res) => res.redirect(`/new`));
 };
 
 export const after = (app: express.Application, server: WebpackDevServer, baseDir: string, env: RouteOptions) => {
     const options: RouteOptions = { mode: "local", ...env, ...{ port: server.options.port } };
-    const config: nconf.Provider = nconf.env("__").file(path.join(baseDir, "config.json"));
+    const config: nconf.Provider = nconf
+        .env({ parseValules: true, inputSeparator: "__"})
+        .file(path.join(baseDir, "config.json"));
     const buildTokenConfig = (response, redirectUriCallback?): OdspTokenConfig => ({
         type: "browserLogin",
         // eslint-disable-next-line @typescript-eslint/no-unsafe-return
@@ -49,11 +52,14 @@ export const after = (app: express.Application, server: WebpackDevServer, baseDi
             break;
         }
         case "tinylicious": {
-            Axios.get(tinyliciousUrls.hostUrl).then().catch((err) => {
-                throw new Error(`
+            const hostUrl = tinyliciousUrls(options).hostUrl;
+            Axios.get(hostUrl).then().catch((err) => {
+                throw new Error(`${err.message}
 
-                You're running the Webpack-Fluid-Loader with Tinylicious.
-                Tinylicious isn't running. Start the Fluid Framework Tinylicious server.
+                ERROR: Cannot connect to Tinylicious service at URL: ${hostUrl}
+
+                Please ensure the Fluid Framework Tinylicious service is running.
+                (See https://www.npmjs.com/package/tinylicious for details.)
                 `);
             });
             break;
@@ -67,6 +73,11 @@ export const after = (app: express.Application, server: WebpackDevServer, baseDi
         options.bearerSecret = options.bearerSecret || config.get("fluid:webpack:bearerSecret");
         if (options.mode !== "tinylicious") {
             options.tenantId = options.tenantId || config.get("fluid:webpack:tenantId") || "fluid";
+            options.enableWholeSummaryUpload =
+                options.enableWholeSummaryUpload ?? config.get("fluid:webpack:enableWholeSummaryUpload") ?? false;
+            if (typeof options.enableWholeSummaryUpload === "string") {
+                options.enableWholeSummaryUpload = options.enableWholeSummaryUpload === "true";
+            }
             if (options.mode === "docker") {
                 options.tenantSecret = options.tenantSecret
                     || config.get("fluid:webpack:docker:tenantSecret")
@@ -152,6 +163,7 @@ export const after = (app: express.Application, server: WebpackDevServer, baseDi
         };
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     app.get("/odspLogin", async (req, res) => {
         if (options.mode !== "spo-df" && options.mode !== "spo") {
             res.write("Mode must be spo or spo-df to login to ODSP.");
@@ -170,6 +182,7 @@ export const after = (app: express.Application, server: WebpackDevServer, baseDi
         );
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     app.get("/pushLogin", async (req, res) => {
         if (options.mode !== "spo-df" && options.mode !== "spo") {
             res.write("Mode must be spo or spo-df to login to Push.");
@@ -217,6 +230,7 @@ export const after = (app: express.Application, server: WebpackDevServer, baseDi
      * For urls of format - http://localhost:8080/doc/<id>.
      * This is when user is trying to load an existing document. We try to load a Container with `id` as documentId.
      */
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     app.get("/doc/:id*", async (req, res) => {
         const ready = await isReady(req, res);
         if (ready) {
@@ -230,7 +244,8 @@ export const after = (app: express.Application, server: WebpackDevServer, baseDi
      * For other `ids`, we treat this as the user trying to load an existing document. We redirect to
      * http://localhost:8080/doc/<id>.
      */
-    app.get("/:id*", async (req, res) => {
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
+    app.get("/:id*", async (req: express.Request, res) => {
         // Ignore favicon.ico urls.
         if (req.url === "/favicon.ico") {
             res.end();
@@ -274,7 +289,7 @@ const fluid = (req: express.Request, res: express.Response, baseDir: string, opt
     <div id="content" style="min-height: 100%;">
     </div>
 
-    <script src="/node_modules/@fluidframework/webpack-fluid-loader/dist/fluid-loader.bundle.js"></script>
+    <script src="/node_modules/@fluid-tools/webpack-fluid-loader/dist/fluid-loader.bundle.js"></script>
     ${packageJson.fluid.browser.umd.files.map((file) => `<script src="/${file}"></script>\n`)}
     <script>
         var pkgJson = ${JSON.stringify(packageJson)};

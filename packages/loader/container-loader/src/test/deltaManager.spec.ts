@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -7,10 +7,11 @@ import { strict as assert } from "assert";
 import { EventEmitter } from "events";
 import { ITelemetryLogger } from "@fluidframework/common-definitions";
 import { DebugLogger } from "@fluidframework/telemetry-utils";
-import { IClient, IDocumentMessage, IProcessMessageResult, MessageType } from "@fluidframework/protocol-definitions";
-import { MockDocumentDeltaConnection, MockDocumentService } from "@fluid-internal/test-loader-utils";
+import { IClient, IDocumentMessage, MessageType } from "@fluidframework/protocol-definitions";
+import { MockDocumentDeltaConnection, MockDocumentService } from "@fluidframework/test-loader-utils";
 import { SinonFakeTimers, useFakeTimers } from "sinon";
 import { DeltaManager } from "../deltaManager";
+import { CollabWindowTracker } from "../collabWindowTracker";
 
 describe("Loader", () => {
     describe("Container Loader", () => {
@@ -22,18 +23,54 @@ describe("Loader", () => {
             let clientSeqNumber = 0;
             let emitter: EventEmitter;
             let seq: number;
-            let intendedResult: IProcessMessageResult;
+            let immediateNoOp: boolean;
             const docId = "docId";
             const submitEvent = "test-submit";
+            const expectedTimeout = 2000;
+            const noopCountFrequency = 300;
             // Stash the real setTimeout because sinon fake timers will hijack it.
             const realSetTimeout = setTimeout;
 
-            async function startDeltaManager() {
-                await deltaManager.connect();
-                deltaManager.inbound.resume();
-                deltaManager.outbound.resume();
-                deltaManager.inboundSignal.resume();
-                deltaManager.updateQuorumJoin();
+            async function startDeltaManager(reconnectAllowed = true) {
+                const service = new MockDocumentService(
+                    undefined,
+                    () => {
+                        // Always create new connection, as reusing old closed connection
+                        // Forces DM into infinite reconnection loop.
+                        deltaConnection = new MockDocumentDeltaConnection(
+                            "test",
+                            (messages) => emitter.emit(submitEvent, messages),
+                        );
+                        return deltaConnection;
+                    },
+                );
+                const client: Partial<IClient> = { mode: "write", details: { capabilities: { interactive: true } } };
+
+                deltaManager = new DeltaManager(
+                    () => service,
+                    client as IClient,
+                    logger,
+                    reconnectAllowed,
+                    () => false,
+                );
+
+                const tracker = new CollabWindowTracker(
+                    (type: MessageType, contents: any) => {
+                        deltaManager.submit(type, contents);
+                        // CollabWindowTracker expects every op submitted (including noops) to result in this call:
+                        tracker.stopSequenceNumberUpdate();
+                    },
+                    () => true,
+                    expectedTimeout,
+                    noopCountFrequency,
+                );
+
+                await deltaManager.attachOpHandler(0, 0, 1, {
+                    process: (message) => tracker.scheduleSequenceNumberUpdate(message, immediateNoOp),
+                    processSignal() { },
+                });
+
+                await deltaManager.connect({ reason: "test" });
             }
 
             // function to yield control in the Javascript event loop.
@@ -43,14 +80,17 @@ describe("Loader", () => {
                 });
             }
 
-            async function emitSequentialOp(type: MessageType = MessageType.Operation) {
-                deltaConnection.emitOp(docId, [{
-                    clientId: "Some client ID",
-                    clientSequenceNumber: ++clientSeqNumber,
-                    minimumSequenceNumber: 0,
-                    sequenceNumber: seq++,
-                    type,
-                }]);
+            async function emitSequentialOps(type: MessageType = MessageType.Operation, count = 1) {
+                for (let num = 0; num < count; ++num) {
+                    assert(!deltaConnection.disposed, "disposed");
+                    deltaConnection.emitOp(docId, [{
+                        clientId: "Some client ID",
+                        clientSequenceNumber: ++clientSeqNumber,
+                        minimumSequenceNumber: 0,
+                        sequenceNumber: seq++,
+                        type,
+                    }]);
+                }
 
                 // Yield the event loop because the inbound op will be processed asynchronously.
                 await yieldEventLoop();
@@ -67,33 +107,13 @@ describe("Loader", () => {
                 clock = useFakeTimers();
             });
 
-            beforeEach(() => {
+            beforeEach(async () => {
                 seq = 1;
                 logger = DebugLogger.create("fluid:testDeltaManager");
                 emitter = new EventEmitter();
-                intendedResult = {};
+                immediateNoOp = false;
 
-                deltaConnection = new MockDocumentDeltaConnection(
-                    "test",
-                    (messages) => emitter.emit(submitEvent, messages),
-                );
                 clientSeqNumber = 0;
-                const service = new MockDocumentService(
-                    undefined,
-                    () => deltaConnection,
-                );
-                const client: Partial<IClient> = { mode: "write", details: { capabilities: { interactive: true } } };
-
-                deltaManager = new DeltaManager(
-                    () => service,
-                    client as IClient,
-                    logger,
-                    false,
-                );
-                deltaManager.attachOpHandler(0, 0, 1, {
-                    process: (message) => intendedResult,
-                    processSignal() { },
-                });
             });
 
             afterEach(() => {
@@ -105,8 +125,6 @@ describe("Loader", () => {
             });
 
             describe("Update Minimum Sequence Number", () => {
-                const expectedTimeout = 2000;
-
                 // helper function asserting that there is exactly one well-formed no-op
                 function assertOneValidNoOp(messages: IDocumentMessage[], immediate: boolean = false) {
                     assert.strictEqual(1, messages.length);
@@ -114,7 +132,7 @@ describe("Loader", () => {
                     assert.strictEqual(immediate ? "" : null, JSON.parse(messages[0].contents as string));
                 }
 
-                it("Should update after timeout with single op", async () => {
+                it("Should update after op count threshold", async () => {
                     let runCount = 0;
                     await startDeltaManager();
                     emitter.on(submitEvent, (messages: IDocumentMessage[]) => {
@@ -122,18 +140,19 @@ describe("Loader", () => {
                         runCount++;
                     });
 
-                    await emitSequentialOp();
-
+                    await emitSequentialOps(MessageType.Operation, noopCountFrequency - 1);
                     await tickClock(expectedTimeout - 1);
                     assert.strictEqual(runCount, 0);
 
-                    await tickClock(1);
+                    await emitSequentialOps(MessageType.Operation, 1);
+                    assert.strictEqual(runCount, 1);
+
+                    await emitSequentialOps(MessageType.Operation, noopCountFrequency - 1);
+                    await tickClock(expectedTimeout - 1);
                     assert.strictEqual(runCount, 1);
                 });
 
-                it("Should update after first timeout with successive ops", async () => {
-                    const numberOfSuccessiveOps = 10;
-                    assert(expectedTimeout > numberOfSuccessiveOps + 1);
+                it("Should update after time threshold reached", async () => {
                     let runCount = 0;
 
                     await startDeltaManager();
@@ -142,39 +161,33 @@ describe("Loader", () => {
                         runCount++;
                     });
 
-                    // initial op
-                    await emitSequentialOp();
-
-                    for (let i = 0; i < numberOfSuccessiveOps; i++) {
-                        await tickClock(1);
-                        await emitSequentialOp();
-                    }
-                    // should not run until timeout
-                    await tickClock(expectedTimeout - numberOfSuccessiveOps - 1);
+                    await emitSequentialOps(MessageType.Operation, noopCountFrequency - 1);
+                    await tickClock(expectedTimeout - 1);
                     assert.strictEqual(runCount, 0);
 
                     // should run after timeout
                     await tickClock(1);
                     assert.strictEqual(runCount, 1);
 
-                    // should not run again (make sure no additional timeouts created)
+                    // Now timeout again should not cause noop
                     await tickClock(expectedTimeout);
+                    await emitSequentialOps(MessageType.Operation, noopCountFrequency - 1);
                     assert.strictEqual(runCount, 1);
                 });
 
-                it("Should not update when receiving no-ops", async () => {
+                it("Should not update when receiving just no-ops even after timeout", async () => {
                     await startDeltaManager();
                     emitter.on(submitEvent, (messages: IDocumentMessage[]) => {
                         assertOneValidNoOp(messages);
                         assert.fail("Should not send no-op.");
                     });
 
-                    await emitSequentialOp(MessageType.NoOp);
+                    await emitSequentialOps(MessageType.NoOp, noopCountFrequency + 1);
                     await tickClock(expectedTimeout);
                 });
 
                 it("Should immediately update with immediate content", async () => {
-                    intendedResult = { immediateNoOp: true };
+                    immediateNoOp = true;
                     let runCount = 0;
                     await startDeltaManager();
 
@@ -183,7 +196,7 @@ describe("Loader", () => {
                         runCount++;
                     });
 
-                    await emitSequentialOp(MessageType.NoOp);
+                    await emitSequentialOps(MessageType.NoOp);
                     assert.strictEqual(runCount, 1);
                 });
 
@@ -207,7 +220,7 @@ describe("Loader", () => {
                         assert.fail("Should not send no-op.");
                     });
 
-                    await emitSequentialOp();
+                    await emitSequentialOps();
                     await tickClock(expectedTimeout - 1);
                     deltaManager.submit(MessageType.Operation, ignoreContent);
                     await tickClock(1);
@@ -244,7 +257,7 @@ describe("Loader", () => {
                 });
 
                 it("Shouldn't raise readonly event when container was already readonly", async () => {
-                    await startDeltaManager();
+                    await startDeltaManager(false /* startDeltaManager */);
 
                     // Closing underlying connection makes container readonly
                     deltaConnection.close();

@@ -1,15 +1,15 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { IIntegerRange } from "./base";
 import { BaseSegment, glc, ISegment, Marker, MergeTree } from "./mergeTree";
-import * as ops from "./ops";
-import * as Properties from "./properties";
+import { IJSONSegment } from "./ops";
+import { PropertySet } from "./properties";
 import { LocalReferenceCollection } from "./localReference";
 
-export interface IJSONTextSegment extends ops.IJSONSegment {
+export interface IJSONTextSegment extends IJSONSegment {
     text: string;
 }
 
@@ -20,7 +20,7 @@ export class TextSegment extends BaseSegment {
         return segment.type === TextSegment.type;
     }
 
-    public static make(text: string, props?: Properties.PropertySet) {
+    public static make(text: string, props?: PropertySet) {
         const tseg = new TextSegment(text);
         if (props) {
             tseg.addProperties(props);
@@ -33,7 +33,7 @@ export class TextSegment extends BaseSegment {
             return new TextSegment(spec);
         } else if (spec && typeof spec === "object" && "text" in spec) {
             const textSpec = spec as IJSONTextSegment;
-            return TextSegment.make(textSpec.text, textSpec.props as Properties.PropertySet);
+            return TextSegment.make(textSpec.text, textSpec.props as PropertySet);
         }
         return undefined;
     }
@@ -60,7 +60,7 @@ export class TextSegment extends BaseSegment {
         return b;
     }
 
-    public canAppend(segment: ISegment) {
+    public canAppend(segment: ISegment): boolean {
         return !this.text.endsWith("\n")
             && TextSegment.is(segment)
             && (this.cachedLength <= MergeTree.TextSegmentGranularity ||
@@ -111,22 +111,31 @@ export class TextSegment extends BaseSegment {
     }
 }
 
-export interface ITextAccumulator {
+interface ITextAccumulator  {
     textSegment: TextSegment;
     placeholder?: string;
     parallelArrays?: boolean;
-    parallelText?: string[];
-    parallelMarkers?: Marker[];
-    parallelMarkerLabel?: string;
-    tagsInProgress?: string[];
 }
 
+interface ITextAndMarkerAccumulator extends ITextAccumulator {
+    parallelArrays: true;
+    parallelText: string[];
+    parallelMarkers: Marker[];
+    parallelMarkerLabel: string;
+    tagsInProgress: string[];
+}
+
+function isTextAndMarkerAccumulator(accum: ITextAccumulator): accum is ITextAndMarkerAccumulator {
+    return accum.parallelArrays === true;
+}
+
+type ITextAccumulatorType = ITextAccumulator | ITextAndMarkerAccumulator;
 export class MergeTreeTextHelper {
     constructor(private readonly mergeTree: MergeTree) { }
 
     public getTextAndMarkers(refSeq: number, clientId: number, label: string, start?: number, end?: number) {
         const range = this.getValidRange(start, end, refSeq, clientId);
-        const accum: ITextAccumulator = {
+        const accum: ITextAndMarkerAccumulator = {
             parallelArrays: true,
             parallelMarkerLabel: label,
             parallelMarkers: [],
@@ -140,7 +149,7 @@ export class MergeTreeTextHelper {
                 `get text on cli ${glc(this.mergeTree, this.mergeTree.collabWindow.clientId)} ` +
                 `ref cli ${glc(this.mergeTree, clientId)} refSeq ${refSeq}`);
         }
-        this.mergeTree.mapRange<ITextAccumulator>(
+        this.mergeTree.mapRange<ITextAndMarkerAccumulator>(
             { leaf: this.gatherText },
             refSeq,
             clientId,
@@ -171,31 +180,32 @@ export class MergeTreeTextHelper {
         return accum.textSegment.text;
     }
 
-    private getValidRange(start: number, end: number, refSeq: number, clientId: number): IIntegerRange {
+    private getValidRange(
+        start: number | undefined,
+        end: number | undefined,
+        refSeq: number,
+        clientId: number,
+    ): IIntegerRange {
         const range: IIntegerRange = {
-            end,
-            start,
+            end: end ?? this.mergeTree.getLength(refSeq, clientId),
+            start: start ?? 0,
         };
-        if (range.start === undefined) {
-            range.start = 0;
-        }
-        if (range.end === undefined) {
-            range.end = this.mergeTree.getLength(refSeq, clientId);
-        }
         return range;
     }
 
     private readonly gatherText = (segment: ISegment, pos: number, refSeq: number, clientId: number, start: number,
-        end: number, accumText: ITextAccumulator) => {
+        end: number, accumText: ITextAccumulatorType) => {
+        let _start = start;
         if (TextSegment.is(segment)) {
             if (MergeTree.traceGatherText) {
                 console.log(
-                    `@cli ${this.mergeTree.getLongClientId(this.mergeTree.collabWindow.clientId)} ` +
+                    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                    `@cli ${this.mergeTree.getLongClientId!(this.mergeTree.collabWindow.clientId)} ` +
                     `gather seg seq ${segment.seq} rseq ${segment.removedSeq} text ${segment.text}`);
             }
             let beginTags = "";
             let endTags = "";
-            if (accumText.parallelArrays) {
+            if (isTextAndMarkerAccumulator(accumText)) {
                 // TODO: let clients pass in function to get tag
                 const tags = [] as string[];
                 const initTags = [] as string[];
@@ -238,17 +248,16 @@ export class MergeTreeTextHelper {
             }
             accumText.textSegment.text += endTags;
             accumText.textSegment.text += beginTags;
-            if ((start <= 0) && (end >= segment.text.length)) {
+            if ((_start <= 0) && (end >= segment.text.length)) {
                 accumText.textSegment.text += segment.text;
             } else {
-                if (start < 0) {
-                    // eslint-disable-next-line no-param-reassign
-                    start = 0;
+                if (_start < 0) {
+                    _start = 0;
                 }
                 if (end >= segment.text.length) {
-                    accumText.textSegment.text += segment.text.substring(start);
+                    accumText.textSegment.text += segment.text.substring(_start);
                 } else {
-                    accumText.textSegment.text += segment.text.substring(start, end);
+                    accumText.textSegment.text += segment.text.substring(_start, end);
                 }
             }
         } else {
@@ -261,7 +270,7 @@ export class MergeTreeTextHelper {
                         accumText.textSegment.text += accumText.placeholder;
                     }
                 }
-            } else if (accumText.parallelArrays) {
+            } else if (isTextAndMarkerAccumulator(accumText)) {
                 const marker = segment as Marker;
                 if (marker.hasTileLabel(accumText.parallelMarkerLabel)) {
                     accumText.parallelMarkers.push(marker);

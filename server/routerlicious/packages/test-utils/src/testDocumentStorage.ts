@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -8,6 +8,7 @@ import { IGitCache, IGitManager } from "@fluidframework/server-services-client";
 import {
     IDatabaseManager,
     IDeliState,
+    IDocument,
     IDocumentDetails,
     IDocumentStorage,
     IScribe,
@@ -18,7 +19,7 @@ import {
     ICommittedProposal,
     ITreeEntry,
     SummaryType,
-    ISnapshotTree,
+    ISnapshotTreeEx,
     SummaryObject,
 } from "@fluidframework/protocol-definitions";
 import {
@@ -40,7 +41,7 @@ export class TestDocumentStorage implements IDocumentStorage {
     /**
      * Retrieves database details for the given document
      */
-    public async getDocument(tenantId: string, documentId: string): Promise<any> {
+    public async getDocument(tenantId: string, documentId: string): Promise<IDocument> {
         const collection = await this.databaseManager.getDocumentCollection();
         return collection.findOne({ documentId, tenantId });
     }
@@ -57,9 +58,10 @@ export class TestDocumentStorage implements IDocumentStorage {
         summary: ISummaryTree,
         sequenceNumber: number,
         term: number,
+        initialHash: string,
         values: [string, ICommittedProposal][],
     ): Promise<IDocumentDetails> {
-        const tenant = await this.tenantManager.getTenant(tenantId);
+        const tenant = await this.tenantManager.getTenant(tenantId, documentId);
         const gitManager = tenant.gitManager;
 
         const blobsShaCache = new Set<string>();
@@ -75,7 +77,7 @@ export class TestDocumentStorage implements IDocumentStorage {
             getQuorumTreeEntries(documentId, sequenceNumber, sequenceNumber, term, quorumSnapshot);
 
         const [protocolTree, appSummaryTree] = await Promise.all([
-            gitManager.createTree({ entries, id: null }),
+            gitManager.createTree({ entries }),
             gitManager.getTree(handle, false),
         ]);
 
@@ -98,13 +100,16 @@ export class TestDocumentStorage implements IDocumentStorage {
         await gitManager.createRef(documentId, commit.sha);
 
         const deli: IDeliState = {
-            branchMap: undefined,
             clients: undefined,
             durableSequenceNumber: sequenceNumber,
+            expHash1: initialHash,
             logOffset: -1,
             sequenceNumber,
             epoch: undefined,
             term: 1,
+            lastSentMSN: 0,
+            nackMessages: undefined,
+            successfullyStartedLambdas: [],
         };
 
         const scribe: IScribe = {
@@ -119,6 +124,7 @@ export class TestDocumentStorage implements IDocumentStorage {
             },
             sequenceNumber,
             lastClientSummaryHead: undefined,
+            lastSummarySequenceNumber: 0,
         };
 
         const collection = await this.databaseManager.getDocumentCollection();
@@ -158,14 +164,14 @@ export class TestDocumentStorage implements IDocumentStorage {
     }
 
     public async getVersions(tenantId: string, documentId: string, count: number): Promise<ICommitDetails[]> {
-        const tenant = await this.tenantManager.getTenant(tenantId);
+        const tenant = await this.tenantManager.getTenant(tenantId, documentId);
         const gitManager = tenant.gitManager;
 
         return gitManager.getCommits(documentId, count);
     }
 
     public async getVersion(tenantId: string, documentId: string, sha: string): Promise<ICommit> {
-        const tenant = await this.tenantManager.getTenant(tenantId);
+        const tenant = await this.tenantManager.getTenant(tenantId, documentId);
         const gitManager = tenant.gitManager;
 
         return gitManager.getCommit(sha);
@@ -206,7 +212,7 @@ export async function writeSummaryTree(
     manager: IGitManager,
     summaryTree: ISummaryTree,
     blobsShaCache: Set<string>,
-    snapshot: ISnapshotTree | undefined,
+    snapshot: ISnapshotTreeEx | undefined,
 ): Promise<string> {
     const entries = await Promise.all(Object.keys(summaryTree.tree).map(async (key) => {
         const entry = summaryTree.tree[key];
@@ -229,7 +235,7 @@ async function writeSummaryTreeObject(
     blobsShaCache: Set<string>,
     key: string,
     object: SummaryObject,
-    snapshot: ISnapshotTree | undefined,
+    snapshot: ISnapshotTreeEx | undefined,
     currentPath = "",
 ): Promise<string> {
     switch (object.type) {
@@ -254,7 +260,7 @@ async function writeSummaryTreeObject(
 function getIdFromPath(
     handleType: SummaryType,
     handlePath: string,
-    fullSnapshot: ISnapshotTree,
+    fullSnapshot: ISnapshotTreeEx,
 ): string {
     const path = handlePath.split("/").map((part) => decodeURIComponent(part));
     if (path[0] === "") {
@@ -268,24 +274,16 @@ function getIdFromPath(
 function getIdFromPathCore(
     handleType: SummaryType,
     path: string[],
-    snapshot: ISnapshotTree,
+    snapshot: ISnapshotTreeEx,
 ): string {
     const key = path[0];
     if (path.length === 1) {
         switch (handleType) {
             case SummaryType.Blob: {
-                const tryId = snapshot.blobs[key];
-                if (!tryId) {
-                    throw Error("Parent summary does not have blob handle for specified path.");
-                }
-                return tryId;
+                return snapshot.blobs[key];
             }
             case SummaryType.Tree: {
-                const tryId = snapshot.trees[key]?.id;
-                if (!tryId) {
-                    throw Error("Parent summary does not have tree handle for specified path.");
-                }
-                return tryId;
+                return snapshot.trees[key]?.id;
             }
             default:
                 throw Error(`Unexpected handle summary object type: "${handleType}".`);

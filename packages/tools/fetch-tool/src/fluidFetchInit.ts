@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -10,6 +10,7 @@ import { configurableUrlResolver } from "@fluidframework/driver-utils";
 import { FluidAppOdspUrlResolver } from "@fluid-internal/fluidapp-odsp-urlresolver";
 import { IClientConfig, IOdspAuthRequestInfo } from "@fluidframework/odsp-doclib-utils";
 import * as odsp from "@fluidframework/odsp-driver";
+import { IOdspResolvedUrl, OdspResourceTokenFetchOptions } from "@fluidframework/odsp-driver-definitions";
 import { OdspUrlResolver } from "@fluidframework/odsp-urlresolver";
 import * as r11s from "@fluidframework/routerlicious-driver";
 import { RouterliciousUrlResolver } from "@fluidframework/routerlicious-urlresolver";
@@ -30,7 +31,7 @@ export const fluidFetchWebNavigator = (url: string) => {
 };
 
 async function initializeODSPCore(
-    odspResolvedUrl: odsp.IOdspResolvedUrl,
+    odspResolvedUrl: IOdspResolvedUrl,
     server: string,
     clientConfig: IClientConfig,
 ) {
@@ -46,7 +47,7 @@ async function initializeODSPCore(
         return;
     }
 
-    const docId = odsp.getHashedDocumentId(driveId, itemId);
+    const docId = await odsp.getHashedDocumentId(driveId, itemId);
 
     console.log(`Connecting to ODSP:
   server: ${server}
@@ -54,10 +55,10 @@ async function initializeODSPCore(
   item:   ${itemId}
   docId:  ${docId}`);
 
-    const getStorageTokenStub = async (siteUrl: string, refresh: boolean, _claims?: string) => {
+    const getStorageTokenStub = async (options: OdspResourceTokenFetchOptions) => {
         return resolveWrapper(
             async (authRequestInfo: IOdspAuthRequestInfo) => {
-                if ((refresh || !authRequestInfo.accessToken) && authRequestInfo.refreshTokenFn) {
+                if ((options.refresh || !authRequestInfo.accessToken) && authRequestInfo.refreshTokenFn) {
                     return authRequestInfo.refreshTokenFn();
                 }
                 return authRequestInfo.accessToken;
@@ -69,10 +70,15 @@ async function initializeODSPCore(
         );
     };
     // eslint-disable-next-line @typescript-eslint/promise-function-async
-    const getWebsocketTokenStub = (_refresh: boolean, _claims?: string) => Promise.resolve("");
+    const getWebsocketTokenStub = (_options: OdspResourceTokenFetchOptions) => Promise.resolve("");
     const odspDocumentServiceFactory = new odsp.OdspDocumentServiceFactory(
         getStorageTokenStub,
-        getWebsocketTokenStub);
+        getWebsocketTokenStub,
+        undefined,
+        {
+            opsBatchSize: 20000,
+            concurrentOpsBatches: 4,
+        });
     return odspDocumentServiceFactory.createDocumentService(odspResolvedUrl);
 }
 
@@ -103,14 +109,8 @@ async function initializeR11s(server: string, pathname: string, r11sResolvedUrl:
 
     console.log(`Connecting to r11s: tenantId=${tenantId} id:${documentId}`);
     const tokenProvider = new r11s.DefaultTokenProvider(paramJWT);
-    return r11s.createDocumentService(
-        r11sResolvedUrl,
-        r11sResolvedUrl.endpoints.ordererUrl,
-        r11sResolvedUrl.endpoints.deltaStorageUrl,
-        r11sResolvedUrl.endpoints.storageUrl,
-        tokenProvider,
-        tenantId,
-        documentId);
+    const r11sDocumentServiceFactory = new r11s.RouterliciousDocumentServiceFactory(tokenProvider);
+    return r11sDocumentServiceFactory.createDocumentService(r11sResolvedUrl);
 }
 
 async function resolveUrl(url: string): Promise<IResolvedUrl | undefined> {
@@ -118,7 +118,7 @@ async function resolveUrl(url: string): Promise<IResolvedUrl | undefined> {
         new OdspUrlResolver(),
         new FluidAppOdspUrlResolver(),
         // eslint-disable-next-line @typescript-eslint/promise-function-async
-        new RouterliciousUrlResolver(undefined, () => Promise.resolve(paramJWT)),
+        new RouterliciousUrlResolver(undefined, () => Promise.resolve(paramJWT), ""),
     ];
     const resolved = await configurableUrlResolver(resolversList, { url });
     return resolved;
@@ -131,7 +131,7 @@ export async function fluidFetchInit(urlStr: string) {
     }
     const protocol = new URL(resolvedUrl.url).protocol;
     if (protocol === "fluid-odsp:") {
-        const odspResolvedUrl = resolvedUrl as odsp.IOdspResolvedUrl;
+        const odspResolvedUrl = resolvedUrl as IOdspResolvedUrl;
         return initializeODSPCore(odspResolvedUrl, new URL(odspResolvedUrl.siteUrl).host, getMicrosoftConfiguration());
     } else if (protocol === "fluid:") {
         const url = new URL(urlStr);

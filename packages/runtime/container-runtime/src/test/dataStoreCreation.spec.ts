@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 import { strict as assert } from "assert";
@@ -93,8 +93,8 @@ describe("Data Store Creation Tests", () => {
             // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
             containerRuntime = {
                 IFluidDataStoreRegistry: globalRegistry,
-                notifyDataStoreInstantiated: (c) => { },
                 on: (event, listener) => { },
+                logger: new TelemetryNullLogger(),
             } as ContainerRuntime;
             const summarizerNode = createRootSummarizerNodeWithGC(
                 new TelemetryNullLogger(),

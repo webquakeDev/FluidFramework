@@ -1,11 +1,10 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import * as util from "util";
-import * as nconf from "nconf";
-// eslint-disable-next-line import/no-extraneous-dependencies
+import nconf from "nconf";
 import rimrafCallback from "rimraf";
 
 export const defaultProvider = new nconf.Provider({}).defaults({

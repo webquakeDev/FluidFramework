@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -79,6 +79,11 @@ export class EsLintTask extends LintBaseTask {
             }
         }
         super.addDependentTasks(dependentTasks);
+    }
+
+    protected get useWorker() {
+        // eslint can't use worker thread as it needs to change the current working directory
+        return this.node.buildContext.workerPool?.useWorkerThreads === false;
     }
 }
 

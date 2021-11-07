@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -40,7 +40,7 @@ async function conductor(
     writers,
     processes,
     callback,
-): Promise<author.IScribeMetrics> {
+): Promise<author.IScribeMetrics | undefined> {
     const process = 0;
     const docId = "";
     const chunks = author.normalizeText(text).split("\n");
@@ -91,7 +91,7 @@ export async function type(
     processes: number,
     callback: author.ScribeMetricsCallback,
     distributed = false,
-): Promise<author.IScribeMetrics> {
+): Promise<author.IScribeMetrics | undefined> {
     if (distributed) {
         console.log("distributed");
     }

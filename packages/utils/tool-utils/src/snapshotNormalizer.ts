@@ -1,14 +1,12 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import { AttachmentTreeEntry, BlobTreeEntry, CommitTreeEntry, TreeTreeEntry } from "@fluidframework/protocol-base";
+import { AttachmentTreeEntry, BlobTreeEntry, TreeTreeEntry } from "@fluidframework/protocol-base";
 import {
     ITree,
-    IBlob,
     TreeEntry,
-    IAttachment,
     ITreeEntry,
 } from "@fluidframework/protocol-definitions";
 
@@ -29,7 +27,7 @@ function getDeepSortedArray(array: any[]): any[] {
     const sortedArray: any[] = [];
     // Sort arrays and objects, if any, in the array.
     for (const element of array) {
-        if (element instanceof Array) {
+        if (Array.isArray(element)) {
             sortedArray.push(getDeepSortedArray(element));
         } else if (element instanceof Object) {
             sortedArray.push(getDeepSortedObject(element));
@@ -59,7 +57,7 @@ function getDeepSortedObject(obj: any): any {
     const keys = Object.keys(obj).sort();
     for (const key of keys) {
         const value = obj[key];
-        if (value instanceof Array) {
+        if (Array.isArray(value)) {
             sortedObj[key] = getDeepSortedArray(value);
         } else if (value instanceof Object) {
             sortedObj[key] = getDeepSortedObject(value);
@@ -72,22 +70,32 @@ function getDeepSortedObject(obj: any): any {
 }
 
 /**
- * Function that sorts a blob's content. If the content is an object or an array, deep sorts them.
- * @returns the sorted blob content.
+ * Function that normalizes a blob's content. If the content is an object or an array, deep sorts them.
+ * Special handling for certain runtime blobs, such as the "gc" blob.
+ * @returns the normalized blob content.
  */
-function getSortedBlobContent(content: string): string {
-    let sortedContent = content;
+function getNormalizedBlobContent(blobContent: string, blobName: string): string {
+    let content = blobContent;
+    if (blobName === gcBlobKey) {
+        // GC blobs may contain "unrefTimestamp" - The time the corresponding object became unreferenced. This is the
+        // timestamp of the last op processed and can differ between clients depending on when GC was run. It will be
+        // undefined if no ops were processed before running GC. So, remove it for the purposes of comparing snapshots.
+        const gcDetails = JSON.parse(content);
+        delete gcDetails.unrefTimestamp;
+        content = JSON.stringify(gcDetails);
+    }
+
     // Deep sort the content if it's parseable.
     try {
         let contentObj = JSON.parse(content);
-        if (contentObj instanceof Array) {
+        if (Array.isArray(contentObj)) {
             contentObj = getDeepSortedArray(contentObj);
         } else if (contentObj instanceof Object) {
             contentObj = getDeepSortedObject(contentObj);
         }
-        sortedContent = JSON.stringify(contentObj);
+        content = JSON.stringify(contentObj);
     } catch {}
-    return sortedContent;
+    return content;
 }
 
 /**
@@ -108,25 +116,23 @@ export function getNormalizedSnapshot(snapshot: ITree, config?: ISnapshotNormali
     for (const entry of snapshot.entries) {
         switch (entry.type) {
             case TreeEntry.Blob: {
-                let contents = (entry.value as IBlob).contents;
+                let contents = entry.value.contents;
                 // If this blob has to be normalized, parse and sort the blob contents first.
                 if (blobsToNormalize.includes(entry.path)) {
-                    contents = getSortedBlobContent(contents);
+                    contents = getNormalizedBlobContent(contents, entry.path);
                 }
                 normalizedEntries.push(new BlobTreeEntry(entry.path, contents));
                 break;
             }
             case TreeEntry.Tree: {
-                normalizedEntries.push(new TreeTreeEntry(entry.path, getNormalizedSnapshot(entry.value as ITree)));
+                normalizedEntries.push(new TreeTreeEntry(entry.path, getNormalizedSnapshot(entry.value, config)));
                 break;
             }
             case TreeEntry.Attachment: {
-                normalizedEntries.push(new AttachmentTreeEntry(entry.path, (entry.value as IAttachment).id));
+                normalizedEntries.push(new AttachmentTreeEntry(entry.path, (entry.value).id));
                 break;
             }
-            case TreeEntry.Commit:
-                normalizedEntries.push(new CommitTreeEntry(entry.path, entry.value as string));
-                break;
+
             default:
                 throw new Error("Unknown entry type");
         }

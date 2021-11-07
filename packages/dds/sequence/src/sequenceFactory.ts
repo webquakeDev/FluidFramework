@@ -1,21 +1,25 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
-import * as MergeTree from "@fluidframework/merge-tree";
 import {
     IChannelAttributes,
     IFluidDataStoreRuntime,
     IChannelServices,
     IChannelFactory,
 } from "@fluidframework/datastore-definitions";
+import {
+    IJSONSegment,
+    Marker,
+    TextSegment,
+} from "@fluidframework/merge-tree";
 import { ISharedObject } from "@fluidframework/shared-object-base";
 import { pkgVersion } from "./packageVersion";
 import { SharedNumberSequence } from "./sharedNumberSequence";
 import { SharedObjectSequence } from "./sharedObjectSequence";
 import { IJSONRunSegment, SubSequence } from "./sharedSequence";
-import { SharedString } from "./sharedString";
+import { SharedString, SharedStringSegment } from "./sharedString";
 
 export class SharedStringFactory implements IChannelFactory {
     // TODO rename back to https://graph.microsoft.com/types/mergeTree/string once paparazzi is able to dynamically
@@ -28,11 +32,11 @@ export class SharedStringFactory implements IChannelFactory {
         packageVersion: pkgVersion,
     };
 
-    public static segmentFromSpec(spec: any) {
-        const maybeText = MergeTree.TextSegment.fromJSONObject(spec);
+    public static segmentFromSpec(spec: any): SharedStringSegment {
+        const maybeText = TextSegment.fromJSONObject(spec);
         if (maybeText) { return maybeText; }
 
-        const maybeMarker = MergeTree.Marker.fromJSONObject(spec);
+        const maybeMarker = Marker.fromJSONObject(spec);
         if (maybeMarker) { return maybeMarker; }
     }
 
@@ -73,7 +77,7 @@ export class SharedObjectSequenceFactory implements IChannelFactory {
         packageVersion: pkgVersion,
     };
 
-    public static segmentFromSpec(segSpec: MergeTree.IJSONSegment) {
+    public static segmentFromSpec(segSpec: IJSONSegment) {
         // eslint-disable-next-line @typescript-eslint/ban-types
         const runSegment = segSpec as IJSONRunSegment<object>;
         if (runSegment.items) {
@@ -124,7 +128,7 @@ export class SharedNumberSequenceFactory implements IChannelFactory {
         packageVersion: pkgVersion,
     };
 
-    public static segmentFromSpec(segSpec: MergeTree.IJSONSegment) {
+    public static segmentFromSpec(segSpec: IJSONSegment) {
         const runSegment = segSpec as IJSONRunSegment<number>;
         if (runSegment.items) {
             const seg = new SubSequence<number>(runSegment.items);

@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -85,9 +85,9 @@ export class DeltaScheduler {
                 // queue, yield the thread and schedule a resume.
 
                 // eslint-disable-next-line @typescript-eslint/no-floating-promises
-                this.deltaManager.inbound.systemPause();
+                this.deltaManager.inbound.pause();
                 setTimeout(() => {
-                    this.deltaManager.inbound.systemResume();
+                    this.deltaManager.inbound.resume();
                 });
 
                 this.processingStartTime = undefined;

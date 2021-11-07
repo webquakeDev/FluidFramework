@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -14,7 +14,6 @@ import {
     IAudience,
     IDeltaManager,
     ContainerWarning,
-    ILoader,
     AttachState,
     ILoaderOptions,
 } from "@fluidframework/container-definitions";
@@ -28,7 +27,8 @@ import { IChannel } from ".";
 
 export interface IFluidDataStoreRuntimeEvents extends IEvent {
     (
-        event: "disconnected" | "dispose" | "leader" | "notleader" | "attaching" | "attached",
+        // eslint-disable-next-line @typescript-eslint/unified-signatures
+        event: "disconnected" | "dispose" | "attaching" | "attached",
         listener: () => void,
     );
     (event: "op", listener: (message: ISequencedDocumentMessage) => void);
@@ -61,13 +61,7 @@ export interface IFluidDataStoreRuntime extends
 
     readonly clientId: string | undefined;
 
-    readonly documentId: string;
-
-    readonly existing: boolean;
-
     readonly connected: boolean;
-
-    readonly loader: ILoader;
 
     readonly logger: ITelemetryLogger;
 
@@ -125,6 +119,7 @@ export interface IFluidDataStoreRuntime extends
 
     /**
      * Errors raised by distributed data structures
+     * @deprecated Warnings are being deprecated
      */
     raiseContainerWarning(warning: ContainerWarning): void;
 }

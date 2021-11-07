@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -13,9 +13,8 @@ import {
 import {
     ISharedDirectory,
     IDirectory,
-    IDirectoryValueChanged,
+    IValueChanged,
 } from "@fluidframework/map";
-import { ISequencedDocumentMessage } from "@fluidframework/protocol-definitions";
 import { IFluidDataStoreFactory } from "@fluidframework/runtime-definitions";
 
 import { v4 as uuid } from "uuid";
@@ -59,19 +58,16 @@ export class TabsDataModel extends EventEmitter implements ITabsDataModel {
         if (!root.hasSubDirectory(tabs)) {
             root.createSubDirectory(tabs);
         }
-        this.tabs = root.getSubDirectory(tabs);
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        this.tabs = root.getSubDirectory(tabs)!;
 
-        root.on(
-            "valueChanged",
+        this.tabs.on(
+            "containedValueChanged",
             (
-                changed: IDirectoryValueChanged,
+                changed: IValueChanged,
                 local: boolean,
-                op: ISequencedDocumentMessage,
-                target: ISharedDirectory,
             ) => {
-                if (changed.path === this.tabs.absolutePath) {
-                    this.emit("newTab", local);
-                }
+                this.emit("newTab", local);
             });
     }
 

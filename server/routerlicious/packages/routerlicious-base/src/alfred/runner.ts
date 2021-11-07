@@ -1,29 +1,31 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { Deferred } from "@fluidframework/common-utils";
 import {
+    ICache,
     IClientManager,
     IDocumentStorage,
     IOrdererManager,
     IProducer,
+    IRunner,
     ITenantManager,
+    IThrottler,
     IWebServer,
     IWebServerFactory,
     MongoManager,
-    IThrottler,
 } from "@fluidframework/server-services-core";
-import * as utils from "@fluidframework/server-services-utils";
 import { Provider } from "nconf";
 import * as winston from "winston";
 import { createMetricClient } from "@fluidframework/server-services";
 import { IAlfredTenant } from "@fluidframework/server-services-client";
+import { Lumberjack } from "@fluidframework/server-services-telemetry";
 import { configureWebSocketServices } from "@fluidframework/server-lambdas";
 import * as app from "./app";
 
-export class AlfredRunner implements utils.IRunner {
+export class AlfredRunner implements IRunner {
     private server: IWebServer;
     private runningDeferred: Deferred<void>;
 
@@ -34,6 +36,9 @@ export class AlfredRunner implements utils.IRunner {
         private readonly orderManager: IOrdererManager,
         private readonly tenantManager: ITenantManager,
         private readonly restThrottler: IThrottler,
+        private readonly socketConnectThrottler: IThrottler,
+        private readonly socketSubmitOpThrottler: IThrottler,
+        private readonly singleUseTokenCache: ICache,
         private readonly storage: IDocumentStorage,
         private readonly clientManager: IClientManager,
         private readonly appTenants: IAlfredTenant[],
@@ -51,6 +56,7 @@ export class AlfredRunner implements utils.IRunner {
             this.config,
             this.tenantManager,
             this.restThrottler,
+            this.singleUseTokenCache,
             this.storage,
             this.appTenants,
             this.mongoManager,
@@ -75,7 +81,9 @@ export class AlfredRunner implements utils.IRunner {
             winston,
             maxNumberOfClientsPerDocument,
             maxTokenLifetimeSec,
-            isTokenExpiryEnabled);
+            isTokenExpiryEnabled,
+            this.socketConnectThrottler,
+            this.socketSubmitOpThrottler);
 
         // Listen on provided port, on all network interfaces.
         httpServer.listen(this.port);
@@ -133,5 +141,6 @@ export class AlfredRunner implements utils.IRunner {
             ? `pipe ${addr}`
             : `port ${addr.port}`;
         winston.info(`Listening on ${bind}`);
+        Lumberjack.info(`Listening on ${bind}`);
     }
 }

@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -16,7 +16,7 @@ import {
 const PJV = require("package-json-validator").PJV;
 
 const licenseId = 'MIT';
-const author = 'Microsoft';
+const author = 'Microsoft and contributors';
 const repository = 'https://github.com/microsoft/FluidFramework';
 const homepage = 'https://fluidframework.com';
 const trademark = `
@@ -28,8 +28,8 @@ Use of Microsoft trademarks or logos in modified versions of this project must n
 `;
 
 function packageShouldBePrivate(name: string): boolean {
-    // See https://github.com/microsoft/FluidFramework/issues/2625
-    if (name === "@fluid-internal/client-api") {
+    // allow test packages to be packaged
+    if (name.startsWith("@fluid-internal/test-")) {
         return false;
     }
 
@@ -97,11 +97,16 @@ export const handlers: Handler[] = [
 
             const validationResults = PJV.validate(jsonStr, 'npm', { warnings: false, recommendations: false });
 
-            // special handling for the end-to-end tests package since it uses non-standard version values.
-            if (file.includes("end-to-end-tests") && !validationResults.valid) {
+            if (!validationResults.valid) {
                 validationResults.errors = validationResults.errors.filter(
                     (error: string) => {
-                        return !error.startsWith("Invalid version range for dependency");
+                        // special handling for packages that use non-standard version values.
+                        // e.g. "name": "npm:package@version"
+                        // 'Invalid version range for dependency @fluidframework/protocol-definitions-0.1024.0: npm:@fluidframework/protocol-definitions@0.1024.0'
+                        const shouldIgnore =
+                            error.startsWith("Invalid version range for dependency")
+                            && error.startsWith(": npm:", error.indexOf(":"))
+                        return !shouldIgnore;
                     }
                 );
 
@@ -299,7 +304,7 @@ export const handlers: Handler[] = [
             // Full match isn't required for cases where the package name is prefixed with names from earlier in the path
             if (!nameWithoutScope.toLowerCase().endsWith(folderName.toLowerCase())) {
                 // These packages don't follow the convention of the dir matching the tail of the package name
-                const skip = ["root", "chaincode-loader"].some((skipMe) => packageName === skipMe);
+                const skip = ["root"].some((skipMe) => packageName === skipMe);
                 if (!skip) {
                     return `Containing folder ${folderName} for package ${packageName} should be named similarly to the package`;
                 }

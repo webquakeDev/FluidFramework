@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -228,7 +228,6 @@ describe("Timers", () => {
 
         function startWithThen(ms?: number, handler?: () => void) {
             timer.start(ms, handler).then(
-                // eslint-disable-next-line  @typescript-eslint/no-unsafe-return
                 (result) => resolveResult = result.timerResult,
                 (error) => assert.fail(error),
             );

@@ -1,60 +1,98 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { ITelemetryLogger } from "@fluidframework/common-definitions";
 import { PerformanceEvent } from "@fluidframework/telemetry-utils";
+import { InstrumentedStorageTokenFetcher, IOdspUrlParts } from "@fluidframework/odsp-driver-definitions";
 import { ISocketStorageDiscovery } from "./contracts";
-import { getWithRetryForTokenRefresh, getOrigin } from "./odspUtils";
+import { getOrigin, TokenFetchOptionsEx } from "./odspUtils";
 import { getApiRoot } from "./odspUrlHelper";
-import { TokenFetchOptions } from "./tokenFetch";
-import { EpochTracker, FetchType } from "./epochTracker";
+import { EpochTracker } from "./epochTracker";
+import { runWithRetry } from "./retryUtils";
+
+interface IJoinSessionBody {
+    requestSocketToken?: boolean;
+    guestDisplayName?: string;
+}
 
 /**
  * Makes join session call on SPO to get information about the web socket for a document
- * @param driveId - The SPO drive id that this request should be made against
- * @param itemId -The SPO item id that this request should be made against
- * @param siteUrl - The SPO site that this request should be made against
+ * @param urlParts - The SPO drive id, itemId, siteUrl that this request should be made against
  * @param path - The API path that is relevant to this request
  * @param method - The type of request, such as GET or POST
  * @param logger - A logger to use for this request
- * @param getVroomToken - A function that is able to provide the vroom token for this request
+ * @param getStorageToken - A function that is able to provide the access token for this request
+ * @param epochTracker - fetch wrapper which incorporates epoch logic around joinSession call
+ * @param requestSocketToken - flag indicating whether joinSession is expected to return access token
+ * which is used when establishing websocket connection with collab session backend service.
+ * @param options - Options to fetch the token.
+ * @param guestDisplayName - display name used to identify guest user joining a session.
+ * This is optional and used only when collab session is being joined via invite.
  */
 export async function fetchJoinSession(
-    driveId: string,
-    itemId: string,
-    siteUrl: string,
+    urlParts: IOdspUrlParts,
     path: string,
     method: string,
     logger: ITelemetryLogger,
-    getStorageToken: (options: TokenFetchOptions, name?: string) => Promise<string | null>,
+    getStorageToken: InstrumentedStorageTokenFetcher,
     epochTracker: EpochTracker,
+    requestSocketToken: boolean,
+    options: TokenFetchOptionsEx,
+    guestDisplayName?: string,
 ): Promise<ISocketStorageDiscovery> {
-    return getWithRetryForTokenRefresh(async (options) => {
-        const token = await getStorageToken(options, "JoinSession");
+    const token = await getStorageToken(options, "JoinSession");
 
-        const extraProps = options.refresh ? { secondAttempt: 1, hasClaims: !!options.claims } : {};
-        return PerformanceEvent.timedExecAsync(logger, { eventName: "JoinSession", ...extraProps }, async (event) => {
+    const extraProps = options.refresh
+        ? { hasClaims: !!options.claims, hasTenantId: !!options.tenantId }
+        : {};
+    return PerformanceEvent.timedExecAsync(
+        logger, {
+            eventName: "JoinSession",
+            attempts: options.refresh ? 2 : 1,
+            ...extraProps,
+        },
+        async (event) => {
             // TODO Extract the auth header-vs-query logic out
-            const siteOrigin = getOrigin(siteUrl);
+            const siteOrigin = getOrigin(urlParts.siteUrl);
             let queryParams = `access_token=${token}`;
             let headers = {};
             if (queryParams.length > 2048) {
                 queryParams = "";
                 headers = { Authorization: `Bearer ${token}` };
             }
+            let body: IJoinSessionBody | undefined;
+            if (requestSocketToken || guestDisplayName) {
+                body = {};
+                if (requestSocketToken) {
+                    body.requestSocketToken = true;
+                }
+                if (guestDisplayName) {
+                    body.guestDisplayName = guestDisplayName;
+                }
+                // IMPORTANT: Must set content-type header explicitly to application/json when request has body.
+                // By default, request will use text/plain as content-type and will be rejected by backend.
+                headers["Content-Type"] = "application/json";
+            }
 
-            const response = await epochTracker.fetchAndParseAsJSON<ISocketStorageDiscovery>(
-                `${getApiRoot(siteOrigin)}/drives/${driveId}/items/${itemId}/${path}?${queryParams}`,
-                { method, headers },
-                FetchType.joinSession,
+            const response = await runWithRetry(
+                async () => epochTracker.fetchAndParseAsJSON<ISocketStorageDiscovery>(
+                    `${getApiRoot(siteOrigin)}/drives/${
+                        urlParts.driveId
+                    }/items/${urlParts.itemId}/${path}?${queryParams}`,
+                    { method, headers, body: body ? JSON.stringify(body) : undefined },
+                    "joinSession",
+                ),
+                "joinSession",
+                logger,
             );
 
             // TODO SPO-specific telemetry
             event.end({
-                sprequestguid: response.headers.get("sprequestguid"),
-                sprequestduration: response.headers.get("sprequestduration"),
+                ...response.commonSpoHeaders,
+                // pushV2 websocket urls will contain pushf
+                pushv2: response.content.deltaStreamSocketUrl.includes("pushf"),
             });
 
             if (response.content.runtimeTenantId && !response.content.tenantId) {
@@ -63,5 +101,4 @@ export async function fetchJoinSession(
 
             return response.content;
         });
-    });
 }

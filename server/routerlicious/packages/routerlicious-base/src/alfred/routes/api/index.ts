@@ -1,9 +1,10 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import {
+    ICache,
     IDocumentStorage,
     IProducer,
     ITenantManager,
@@ -22,13 +23,14 @@ export function create(
     config: Provider,
     tenantManager: ITenantManager,
     throttler: IThrottler,
+    singleUseTokenCache: ICache,
     storage: IDocumentStorage,
     mongoManager: MongoManager,
     producer: IProducer,
     appTenants: IAlfredTenant[]): Router {
     const router: Router = Router();
     const deltasRoute = deltas.create(config, tenantManager, mongoManager, appTenants, throttler);
-    const documentsRoute = documents.create(storage, appTenants, throttler);
+    const documentsRoute = documents.create(storage, appTenants, throttler, singleUseTokenCache, config, tenantManager);
     const apiRoute = api.create(config, producer, tenantManager, storage, throttler);
 
     router.use(cors());

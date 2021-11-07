@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
@@ -20,3 +20,4 @@ export * from "./sortedSegmentSet";
 export * from "./textSegment";
 export * from "./localReference";
 export * from "./snapshotLoader";
+export * from "./constants";

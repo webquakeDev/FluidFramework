@@ -1,93 +1,68 @@
 /*!
- * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
 
 import { DocumentDeltaConnection } from "@fluidframework/driver-base";
-import { IDocumentDeltaConnection } from "@fluidframework/driver-definitions";
-import {
-    NetworkErrorBasic,
-    GenericNetworkError,
-    createGenericNetworkError,
-} from "@fluidframework/driver-utils";
-import { IClient } from "@fluidframework/protocol-definitions";
-import { TelemetryNullLogger } from "@fluidframework/common-utils";
+import { IDocumentDeltaConnection, DriverError } from "@fluidframework/driver-definitions";
+import { IClient, IConnect } from "@fluidframework/protocol-definitions";
+import { ITelemetryLogger } from "@fluidframework/common-definitions";
+import { errorObjectFromSocketError, IR11sSocketError } from "./errorUtils";
 
-export enum R11sErrorType {
-    authorizationError = "authorizationError",
-    fileNotFoundOrAccessDeniedError = "fileNotFoundOrAccessDeniedError",
-}
-
-function createNetworkError(
-    errorMessage: string,
-    canRetry: boolean,
-    statusCode: number,
-    retryAfterSeconds: number,
-) {
-    switch (statusCode) {
-        case 401:
-        case 403:
-            return new NetworkErrorBasic(
-                errorMessage, R11sErrorType.authorizationError, canRetry, statusCode);
-            break;
-        case 404:
-            return new NetworkErrorBasic(
-                errorMessage, R11sErrorType.fileNotFoundOrAccessDeniedError, canRetry, statusCode);
-            break;
-        case 500:
-            return new GenericNetworkError(errorMessage, canRetry, statusCode);
-            break;
-        default:
-            return createGenericNetworkError(errorMessage, canRetry, retryAfterSeconds, statusCode);
-    }
-}
-
-/**
- * Returns specific network error based on error object.
- */
-const errorObjectFromSocketError = (socketError: any, canRetry: boolean) => {
-    return createNetworkError(
-        socketError.message,
-        canRetry,
-        socketError.code,
-        socketError.retryAfter);
-};
+const protocolVersions = ["^0.4.0", "^0.3.0", "^0.2.0", "^0.1.0"];
 
 /**
  * Wrapper over the shared one for driver specific translation.
  */
-export class R11sDocumentDeltaConnection extends DocumentDeltaConnection implements IDocumentDeltaConnection {
+export class R11sDocumentDeltaConnection extends DocumentDeltaConnection
+{
     public static async create(
         tenantId: string,
         id: string,
         token: string | null,
         io: SocketIOClientStatic,
         client: IClient,
-        url: string): Promise<IDocumentDeltaConnection> {
-        try {
-            const connection = await DocumentDeltaConnection.create(
-                tenantId,
-                id,
-                token,
-                io,
-                client,
-                url,
-                new TelemetryNullLogger(),
-            );
-            return connection;
-        } catch (errorObject) {
-            // Test if it's a NetworkError. Note that there might be no SocketError on it in case we hit
-            // nonrecoverable socket.io protocol errors! So we test canRetry property first - if it false,
-            // that means protocol is broken and reconnecting will not help.
+        url: string,
+        logger: ITelemetryLogger,
+        timeoutMs = 20000): Promise<IDocumentDeltaConnection> {
+        const socket = io(
+            url,
+            {
+                query: {
+                    documentId: id,
+                    tenantId,
+                },
+                reconnection: false,
+                transports: ["websocket"],
+                timeout: timeoutMs,
+            });
 
-            // TODO: Add more cases as we feel appropriate.
-            if (errorObject !== null && typeof errorObject === "object" && errorObject.canRetry) {
-                const socketError = errorObject.socketError;
-                if (typeof socketError === "object" && socketError !== null) {
-                    throw errorObjectFromSocketError(socketError, true);
-                }
-            }
-            throw errorObject;
+        const connectMessage: IConnect = {
+            client,
+            id,
+            mode: client.mode,
+            tenantId,
+            token,  // Token is going to indicate tenant level information, etc...
+            versions: protocolVersions,
+        };
+
+        const deltaConnection = new R11sDocumentDeltaConnection(socket, id, logger);
+
+        await deltaConnection.initialize(connectMessage, timeoutMs);
+        return deltaConnection;
+    }
+
+    /**
+     * Error raising for socket.io issues
+     */
+    protected createErrorObject(handler: string, error?: any, canRetry = true): DriverError {
+        // Note: we suspect the incoming error object is either:
+        // - a socketError: add it to the OdspError object for driver to be able to parse it and reason over it.
+        // - anything else: let base class handle it
+        if (canRetry && Number.isInteger(error?.code) && typeof error?.message === "string") {
+            return errorObjectFromSocketError(error as IR11sSocketError, handler) as DriverError;
+        } else {
+            return super.createErrorObject(handler, error, canRetry);
         }
     }
 }
