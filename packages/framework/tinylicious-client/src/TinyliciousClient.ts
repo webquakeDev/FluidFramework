@@ -2,12 +2,16 @@
  * Copyright (c) Microsoft Corporation and contributors. All rights reserved.
  * Licensed under the MIT License.
  */
-import { Container, Loader } from "@fluidframework/container-loader";
+import { Loader } from "@fluidframework/container-loader";
 import {
     IDocumentServiceFactory,
     IUrlResolver,
 } from "@fluidframework/driver-definitions";
-import { AttachState } from "@fluidframework/container-definitions";
+import {
+    AttachState,
+    IContainer,
+    IFluidModuleWithDetails,
+} from "@fluidframework/container-definitions";
 import { RouterliciousDocumentServiceFactory } from "@fluidframework/routerlicious-driver";
 import {
     createTinyliciousCreateNewRequest,
@@ -108,7 +112,7 @@ export class TinyliciousClient {
 
     // #region private
     private getContainerServices(
-        container: Container,
+        container: IContainer,
     ): TinyliciousContainerServices {
         return {
             audience: new TinyliciousAudience(container),
@@ -119,8 +123,14 @@ export class TinyliciousClient {
         const containerRuntimeFactory = new DOProviderContainerRuntimeFactory(
             containerSchema,
         );
-        const module = { fluidExport: containerRuntimeFactory };
-        const codeLoader = { load: async () => module };
+        const load = async (): Promise<IFluidModuleWithDetails> => {
+            return {
+                module: { fluidExport: containerRuntimeFactory },
+                details: { package: "no-dynamic-package", config: {} },
+            };
+        };
+
+        const codeLoader = { load };
         const loader = new Loader({
             urlResolver: this.urlResolver,
             documentServiceFactory: this.documentServiceFactory,

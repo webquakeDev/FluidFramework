@@ -14,8 +14,6 @@ export type ConnectionMode = "write" | "read";
 // @public (undocumented)
 export enum FileMode {
     // (undocumented)
-    Commit = "160000",
-    // (undocumented)
     Directory = "040000",
     // (undocumented)
     Executable = "100755",
@@ -97,7 +95,6 @@ export interface IClientDetails {
     capabilities: ICapabilities;
     // (undocumented)
     device?: string;
-    // (undocumented)
     environment?: string;
     // (undocumented)
     type?: string;
@@ -123,6 +120,7 @@ export interface IConnect {
     id: string;
     mode: ConnectionMode;
     nonce?: string;
+    relayUserAgent?: string;
     supportedFeatures?: Record<string, any>;
     tenantId: string;
     token: string | null;
@@ -142,6 +140,7 @@ export interface IConnected {
     maxMessageSize: number;
     mode: ConnectionMode;
     nonce?: string;
+    relayServiceAgent?: string;
     serviceConfiguration: IClientConfiguration;
     supportedFeatures?: Record<string, any>;
     supportedVersions: string[];
@@ -153,13 +152,10 @@ export interface IConnected {
 export interface ICreateBlobResponse {
     // (undocumented)
     id: string;
-    // @deprecated (undocumented)
-    url: string;
 }
 
 // @public (undocumented)
 export interface IDocumentAttributes {
-    branch: string;
     minimumSequenceNumber: number;
     sequenceNumber: number;
     term: number | undefined;
@@ -213,13 +209,6 @@ export interface INackContent {
     message: string;
     retryAfter?: number;
     type: NackErrorType;
-}
-
-// @public
-export interface IPendingProposal extends ISequencedProposal {
-    disableRejection(): any;
-    reject(): any;
-    readonly rejectionDisabled: boolean;
 }
 
 // @public (undocumented)
@@ -290,8 +279,6 @@ export interface IQuorumProposals extends IEventProvider<IQuorumProposalsEvents>
     // (undocumented)
     get(key: string): any;
     // (undocumented)
-    getApprovalData(key: string): ICommittedProposal | undefined;
-    // (undocumented)
     has(key: string): boolean;
     // (undocumented)
     propose(key: string, value: any): Promise<void>;
@@ -300,13 +287,9 @@ export interface IQuorumProposals extends IEventProvider<IQuorumProposalsEvents>
 // @public
 export interface IQuorumProposalsEvents extends IErrorEvent {
     // (undocumented)
-    (event: "addProposal", listener: (proposal: IPendingProposal) => void): any;
+    (event: "addProposal", listener: (proposal: ISequencedProposal) => void): any;
     // (undocumented)
     (event: "approveProposal", listener: (sequenceNumber: number, key: string, value: any, approvalSequenceNumber: number) => void): any;
-    // (undocumented)
-    (event: "commitProposal", listener: (sequenceNumber: number, key: string, value: any, approvalSequenceNumber: number, commitSequenceNumber: number) => void): any;
-    // (undocumented)
-    (event: "rejectProposal", listener: (sequenceNumber: number, key: string, value: any, rejections: string[]) => void): any;
 }
 
 // @public (undocumented)
@@ -375,26 +358,26 @@ export interface IServerError {
 export interface ISignalClient {
     // (undocumented)
     client: IClient;
+    clientConnectionNumber?: number;
     // (undocumented)
     clientId: string;
+    referenceSequenceNumber?: number;
 }
 
 // @public (undocumented)
 export interface ISignalMessage {
+    clientConnectionNumber?: number;
     // (undocumented)
     clientId: string | null;
     // (undocumented)
     content: any;
+    referenceSequenceNumber?: number;
 }
 
 // @public (undocumented)
 export interface ISnapshotTree {
     // (undocumented)
     blobs: {
-        [path: string]: string;
-    };
-    // (undocumented)
-    commits: {
         [path: string]: string;
     };
     // (undocumented)
@@ -462,6 +445,8 @@ export interface ISummaryCommitter {
 // @public (undocumented)
 export interface ISummaryConfiguration {
     // (undocumented)
+    disableSummaries?: boolean;
+    // (undocumented)
     idleTime: number;
     // (undocumented)
     maxAckWaitTime: number;
@@ -498,8 +483,6 @@ export interface ISummaryHandle {
 // @public
 export interface ISummaryNack {
     code?: number;
-    // @deprecated
-    errorMessage: string;
     message?: string;
     retryAfter?: number;
     summaryProposal: ISummaryProposal;
@@ -592,9 +575,6 @@ export type ITreeEntry = {
     type: TreeEntry.Blob;
     value: IBlob;
 } | {
-    type: TreeEntry.Commit;
-    value: string;
-} | {
     type: TreeEntry.Tree;
     value: ITree;
 } | {
@@ -646,8 +626,6 @@ export enum MessageType {
     RemoteHelp = "remoteHelp",
     // (undocumented)
     RoundTrip = "tripComplete",
-    // (undocumented)
-    Save = "saveOp",
     // (undocumented)
     Summarize = "summarize",
     // (undocumented)
@@ -716,8 +694,6 @@ export enum TreeEntry {
     Attachment = "Attachment",
     // (undocumented)
     Blob = "Blob",
-    // (undocumented)
-    Commit = "Commit",
     // (undocumented)
     Tree = "Tree"
 }

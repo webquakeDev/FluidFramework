@@ -6,11 +6,12 @@
 
 import { AttachState } from '@fluidframework/container-definitions';
 import { BaseContainerRuntimeFactory } from '@fluidframework/aqueduct';
-import { Container } from '@fluidframework/container-loader';
+import { ConnectionState } from '@fluidframework/container-definitions';
 import { DataObject } from '@fluidframework/aqueduct';
 import { IAudience } from '@fluidframework/container-definitions';
 import { IChannelFactory } from '@fluidframework/datastore-definitions';
 import { IClient } from '@fluidframework/protocol-definitions';
+import { IContainer } from '@fluidframework/container-definitions';
 import { IContainerRuntime } from '@fluidframework/container-runtime-definitions';
 import { IEvent } from '@fluidframework/common-definitions';
 import { IEventProvider } from '@fluidframework/common-definitions';
@@ -38,11 +39,14 @@ export class DOProviderContainerRuntimeFactory extends BaseContainerRuntimeFacto
 
 // @public
 export class FluidContainer extends TypedEventEmitter<IFluidContainerEvents> implements IFluidContainer {
-    constructor(container: Container, rootDataObject: RootDataObject);
+    constructor(container: IContainer, rootDataObject: RootDataObject);
     attach(): Promise<string>;
     get attachState(): AttachState;
+    connect(): Promise<void>;
     get connected(): boolean;
+    get connectionState(): ConnectionState;
     create<T extends IFluidLoadable>(objectClass: LoadableObjectClass<T>): Promise<T>;
+    disconnect(): Promise<void>;
     dispose(): void;
     get disposed(): boolean;
     get initialObjects(): Record<string, IFluidLoadable>;
@@ -59,8 +63,12 @@ export interface IConnection {
 export interface IFluidContainer extends IEventProvider<IFluidContainerEvents> {
     attach(): Promise<string>;
     readonly attachState: AttachState;
+    connect?(): void;
+    // @deprecated
     readonly connected: boolean;
+    readonly connectionState: ConnectionState;
     create<T extends IFluidLoadable>(objectClass: LoadableObjectClass<T>): Promise<T>;
+    disconnect?(): void;
     dispose(): void;
     readonly disposed: boolean;
     readonly initialObjects: LoadableObjectRecord;
@@ -106,7 +114,9 @@ export type LoadableObjectCtor<T extends IFluidLoadable> = new (...args: any[]) 
 export type LoadableObjectRecord = Record<string, IFluidLoadable>;
 
 // @public (undocumented)
-export class RootDataObject extends DataObject<{}, RootDataObjectProps> {
+export class RootDataObject extends DataObject<{
+    InitialState: RootDataObjectProps;
+}> {
     // (undocumented)
     create<T extends IFluidLoadable>(objectClass: LoadableObjectClass<T>): Promise<T>;
     // (undocumented)
@@ -125,11 +135,11 @@ export interface RootDataObjectProps {
 
 // @public
 export abstract class ServiceAudience<M extends IMember = IMember> extends TypedEventEmitter<IServiceAudienceEvents<M>> implements IServiceAudience<M> {
-    constructor(container: Container);
+    constructor(container: IContainer);
     // (undocumented)
     protected readonly audience: IAudience;
     // (undocumented)
-    protected readonly container: Container;
+    protected readonly container: IContainer;
     // (undocumented)
     protected abstract createServiceMember(audienceMember: IClient): M;
     getMembers(): Map<string, M>;

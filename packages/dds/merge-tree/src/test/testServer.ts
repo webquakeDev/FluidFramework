@@ -17,7 +17,6 @@ import {
     IncrementalExecOp,
     IncrementalMapState,
     ISegment,
-    MergeTree,
 } from "../mergeTree";
 import { PropertySet } from "../properties";
 import { MergeTreeTextHelper, TextSegment } from "../textSegment";
@@ -29,10 +28,10 @@ import { TestClient } from "./testClient";
  */
 export class TestServer extends TestClient {
     seq = 1;
-    clients: TestClient[];
-    listeners: TestClient[]; // Listeners do not generate edits
-    clientSeqNumbers: Heap<ClientSeq>;
-    upstreamMap: RedBlackTree<number, number>;
+    clients: TestClient[] = [];
+    listeners: TestClient[] = []; // Listeners do not generate edits
+    clientSeqNumbers: Heap<ClientSeq> = new Heap<ClientSeq>([], clientSeqComparer);
+    upstreamMap: RedBlackTree<number, number> = new RedBlackTree<number, number>(compareNumbers);
     constructor(options?: PropertySet) {
         super(options);
     }
@@ -42,7 +41,7 @@ export class TestServer extends TestClient {
         for (const upstreamClient of upstreamClients) {
             this.clientSeqNumbers.add({
                 refSeq: upstreamClient.getCurrentSeq(),
-                clientId: upstreamClient.longClientId,
+                clientId: upstreamClient.longClientId ?? "",
             });
         }
     }
@@ -50,7 +49,7 @@ export class TestServer extends TestClient {
         this.clientSeqNumbers = new Heap<ClientSeq>([], clientSeqComparer);
         this.clients = clients;
         for (const client of clients) {
-            this.clientSeqNumbers.add({ refSeq: client.getCurrentSeq(), clientId: client.longClientId });
+            this.clientSeqNumbers.add({ refSeq: client.getCurrentSeq(), clientId: client.longClientId ?? "" });
         }
     }
     addListeners(listeners: TestClient[]) {
@@ -61,8 +60,7 @@ export class TestServer extends TestClient {
         if (TestClient.useCheckQ) {
             const clid = this.getShortClientId(msg.clientId);
             return checkTextMatchRelative(msg.referenceSequenceNumber, clid, this, msg);
-        }
-        else {
+        } else {
             return false;
         }
     }
@@ -71,7 +69,7 @@ export class TestServer extends TestClient {
     transformUpstreamMessage(msg: ISequencedDocumentMessage) {
         if (msg.referenceSequenceNumber > 0) {
             msg.referenceSequenceNumber =
-                this.upstreamMap.get(msg.referenceSequenceNumber).data;
+                this.upstreamMap.get(msg.referenceSequenceNumber)?.data ?? 0;
         }
         msg.origin = {
             id: "A",
@@ -111,8 +109,7 @@ export class TestServer extends TestClient {
                 }
                 if (this.clients) {
                     let minCli = this.clientSeqNumbers.peek();
-                    // eslint-disable-next-line eqeqeq
-                    if (minCli && (minCli.clientId == msg.clientId) &&
+                    if (minCli && (minCli.clientId === msg.clientId) &&
                         (minCli.refSeq < msg.referenceSequenceNumber)) {
                         const cliSeq = this.clientSeqNumbers.get();
                         const oldSeq = cliSeq.refSeq;
@@ -133,8 +130,7 @@ export class TestServer extends TestClient {
                         }
                     }
                 }
-            }
-            else {
+            } else {
                 break;
             }
             _msgCount--;
@@ -142,7 +138,7 @@ export class TestServer extends TestClient {
         return false;
     }
     public incrementalGetText(start?: number, end?: number) {
-        const range: IIntegerRange = { start, end };
+        const range: Partial<IIntegerRange> = { start, end };
         if (range.start === undefined) {
             range.start = 0;
         }
@@ -172,11 +168,6 @@ export class TestServer extends TestClient {
 
 function incrementalGatherText(segment: ISegment, state: IncrementalMapState<TextSegment>) {
     if (TextSegment.is(segment)) {
-        if (MergeTree.traceGatherText) {
-            console.log(
-                `@cli ${state.clientId ? state.clientId : -1} ` +
-                `gather seg seq ${segment.seq} rseq ${segment.removedSeq} text ${segment.text}`);
-        }
         if ((state.start <= 0) && (state.end >= segment.text.length)) {
             state.context.text += segment.text;
         } else {
@@ -201,8 +192,7 @@ export function checkTextMatchRelative(
     const client = server.clients[clientId];
     const serverText = new MergeTreeTextHelper(server.mergeTree).getText(refSeq, clientId);
     const cliText = client.checkQ.dequeue();
-    // eslint-disable-next-line eqeqeq
-    if ((cliText === undefined) || (cliText != serverText)) {
+    if ((cliText === undefined) || (cliText !== serverText)) {
         console.log(`mismatch `);
         console.log(msg);
         //        console.log(serverText);

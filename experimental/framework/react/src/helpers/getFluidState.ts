@@ -4,7 +4,7 @@
  */
 
 import {
-    IFluidObject,
+    FluidObject,
     IFluidHandle,
 } from "@fluidframework/core-interfaces";
 import { ISharedMap, SharedMap } from "@fluidframework/map";
@@ -51,8 +51,8 @@ export function getFluidState<
             ?.sharedObjectCreate;
         let value = fluidObjectState.get(fluidKey);
         if (value !== undefined && createCallback !== undefined) {
-            const possibleFluidObjectId = (value as IFluidObject)
-                ?.IFluidHandle?.absolutePath;
+            const handle: FluidObject<IFluidHandle> = value;
+            const possibleFluidObjectId = handle?.IFluidHandle?.absolutePath;
             if (possibleFluidObjectId !== undefined) {
                 value = (fluidObjectMap.get(possibleFluidObjectId)) as IFluidObjectMapItem;
                 fluidState[fluidKey] = value?.fluidObject;

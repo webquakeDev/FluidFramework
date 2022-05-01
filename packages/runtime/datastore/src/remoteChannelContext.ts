@@ -6,6 +6,7 @@
 import { ITelemetryLogger } from "@fluidframework/common-definitions";
 import { assert } from "@fluidframework/common-utils";
 import { DataCorruptionError } from "@fluidframework/container-utils";
+import { IFluidHandle } from "@fluidframework/core-interfaces";
 import {
     IChannel,
     IChannelAttributes,
@@ -22,7 +23,7 @@ import {
     CreateChildSummarizerNodeFn,
     IFluidDataStoreContext,
     IGarbageCollectionData,
-    IGarbageCollectionSummaryDetails,
+    IGarbageCollectionDetailsBase,
     ISummarizeInternalResult,
     ISummarizeResult,
     ISummarizerNodeWithGC,
@@ -32,7 +33,7 @@ import {
     attributesBlobKey,
     createServiceEndpoints,
     IChannelContext,
-    summarizeChannel,
+    summarizeChannelAsync,
 } from "./channelContext";
 import { ChannelDeltaConnection } from "./channelDeltaConnection";
 import { ChannelStorageService } from "./channelStorageService";
@@ -58,20 +59,25 @@ export class RemoteChannelContext implements IChannelContext {
         storageService: IDocumentStorageService,
         submitFn: (content: any, localOpMetadata: unknown) => void,
         dirtyFn: (address: string) => void,
+        addedGCOutboundReferenceFn: (srcHandle: IFluidHandle, outboundHandle: IFluidHandle) => void,
         private readonly id: string,
-        baseSnapshot:  ISnapshotTree,
+        baseSnapshot: ISnapshotTree,
         private readonly registry: ISharedObjectRegistry,
         extraBlobs: Map<string, ArrayBufferLike> | undefined,
         createSummarizerNode: CreateChildSummarizerNodeFn,
-        gcDetailsInInitialSummary: () => Promise<IGarbageCollectionSummaryDetails>,
+        getBaseGCDetails: () => Promise<IGarbageCollectionDetailsBase>,
         private readonly attachMessageType?: string,
     ) {
+        this.subLogger = ChildLogger.create(this.runtime.logger, "RemoteChannelContext");
+
         this.services = createServiceEndpoints(
             this.id,
             this.dataStoreContext.connected,
             submitFn,
             () => dirtyFn(this.id),
+            addedGCOutboundReferenceFn,
             storageService,
+            this.subLogger,
             baseSnapshot,
             extraBlobs);
 
@@ -81,10 +87,9 @@ export class RemoteChannelContext implements IChannelContext {
         this.summarizerNode = createSummarizerNode(
             thisSummarizeInternal,
             async (fullGC?: boolean) => this.getGCDataInternal(fullGC),
-            async () => gcDetailsInInitialSummary(),
+            async () => getBaseGCDetails(),
         );
 
-        this.subLogger = ChildLogger.create(this.runtime.logger, "RemoteChannelContext");
         this.thresholdOpsCounter = new ThresholdCounter(
             RemoteChannelContext.pendingOpsCountThreshold,
             this.subLogger,
@@ -144,7 +149,7 @@ export class RemoteChannelContext implements IChannelContext {
 
     private async summarizeInternal(fullTree: boolean, trackState: boolean): Promise<ISummarizeInternalResult> {
         const channel = await this.getChannel();
-        const summarizeResult = summarizeChannel(channel, fullTree, trackState);
+        const summarizeResult = await summarizeChannelAsync(channel, fullTree, trackState);
         return { ...summarizeResult, id: this.id };
     }
 
@@ -168,7 +173,10 @@ export class RemoteChannelContext implements IChannelContext {
             if (this.attachMessageType === undefined) {
                 // TODO: dataStoreId may require a different tag from PackageData #7488
                 throw new DataCorruptionError("channelTypeNotAvailable", {
-                    channelId: this.id,
+                    channelId: {
+                        value: this.id,
+                        tag: TelemetryDataTag.PackageData,
+                    },
                     dataStoreId: {
                         value: this.dataStoreContext.id,
                         tag: TelemetryDataTag.PackageData,
@@ -180,7 +188,10 @@ export class RemoteChannelContext implements IChannelContext {
             if (factory === undefined) {
                 // TODO: dataStoreId may require a different tag from PackageData #7488
                 throw new DataCorruptionError("channelFactoryNotRegisteredForAttachMessageType", {
-                    channelId: this.id,
+                    channelId: {
+                        value: this.id,
+                        tag: TelemetryDataTag.PackageData,
+                    },
                     dataStoreId: {
                         value: this.dataStoreContext.id,
                         tag: TelemetryDataTag.PackageData,
@@ -195,7 +206,10 @@ export class RemoteChannelContext implements IChannelContext {
             if (factory === undefined) {
                 // TODO: dataStoreId may require a different tag from PackageData #7488
                 throw new DataCorruptionError("channelFactoryNotRegisteredForGivenType", {
-                    channelId: this.id,
+                    channelId: {
+                        value: this.id,
+                        tag: TelemetryDataTag.PackageData,
+                    },
                     dataStoreId: {
                         value: this.dataStoreContext.id,
                         tag: TelemetryDataTag.PackageData,
@@ -212,7 +226,7 @@ export class RemoteChannelContext implements IChannelContext {
                 this.subLogger.sendTelemetryEvent(
                     {
                         eventName: "ChannelAttributesVersionMismatch",
-                        channelType: {value: attributes.type, tag: TelemetryDataTag.PackageData},
+                        channelType: { value: attributes.type, tag: TelemetryDataTag.PackageData },
                         channelSnapshotVersion: {
                             value: `${attributes.snapshotFormatVersion}@${attributes.packageVersion}`,
                             tag: TelemetryDataTag.PackageData,

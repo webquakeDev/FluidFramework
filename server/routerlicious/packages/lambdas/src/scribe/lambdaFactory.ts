@@ -3,8 +3,6 @@
  * Licensed under the MIT License.
  */
 
-/* eslint-disable no-null/no-null */
-
 import { EventEmitter } from "events";
 import { inspect } from "util";
 import {
@@ -85,7 +83,7 @@ export class ScribeLambdaFactory extends EventEmitter implements IPartitionLambd
             const tenant = await this.tenantManager.getTenant(tenantId, documentId);
             gitManager = tenant.gitManager;
 
-            summaryReader = new SummaryReader(documentId, gitManager, this.enableWholeSummaryUpload);
+            summaryReader = new SummaryReader(tenantId, documentId, gitManager, this.enableWholeSummaryUpload);
             [latestSummary, document] = await Promise.all([
                 summaryReader.readLastSummary(),
                 this.documentCollection.findOne({ documentId, tenantId }),
@@ -103,7 +101,7 @@ export class ScribeLambdaFactory extends EventEmitter implements IPartitionLambd
             opMessages = dbMessages.map((message) => message.operation);
         } catch (error) {
             context.log?.error(`Scribe lambda creation failed. Exception: ${inspect(error)}`);
-            await this.sendLambdaStartResult(tenantId, documentId, {lambdaName: LambdaName.Scribe, success: false});
+            await this.sendLambdaStartResult(tenantId, documentId, { lambdaName: LambdaName.Scribe, success: false });
             scribeSessionMetric?.error("Scribe lambda creation failed", error);
 
             throw error;
@@ -147,7 +145,12 @@ export class ScribeLambdaFactory extends EventEmitter implements IPartitionLambd
                     + `Current message @${message.sequenceNumber}.`
                     + `Expected message @${expectedSequenceNumber}`);
                 scribeSessionMetric?.error("Invalid message sequence from checkpoint/summary", error);
-                await this.sendLambdaStartResult(tenantId, documentId, {lambdaName: LambdaName.Scribe, success: false});
+                await this.sendLambdaStartResult(
+                    tenantId,
+                    documentId, {
+                    lambdaName: LambdaName.Scribe,
+                    success: false,
+                });
 
                 throw error;
             }
@@ -186,7 +189,7 @@ export class ScribeLambdaFactory extends EventEmitter implements IPartitionLambd
             opsSinceLastSummary,
             scribeSessionMetric);
 
-        await this.sendLambdaStartResult(tenantId, documentId, {lambdaName: LambdaName.Scribe, success: true});
+        await this.sendLambdaStartResult(tenantId, documentId, { lambdaName: LambdaName.Scribe, success: true });
         return scribeLambda;
     }
 

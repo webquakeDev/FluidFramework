@@ -7,6 +7,7 @@
 import * as api from '@fluidframework/protocol-definitions';
 import { AxiosInstance } from 'axios';
 import { AxiosRequestConfig } from 'axios';
+import { AxiosRequestHeaders } from 'axios';
 import { ISequencedDocumentMessage } from '@fluidframework/protocol-definitions';
 import { ISnapshotTree } from '@fluidframework/protocol-definitions';
 import { ISnapshotTreeEx } from '@fluidframework/protocol-definitions';
@@ -20,7 +21,7 @@ import { SummaryObject } from '@fluidframework/protocol-definitions';
 
 // @public (undocumented)
 export class BasicRestWrapper extends RestWrapper {
-    constructor(baseurl?: string, defaultQueryString?: Record<string, unknown>, maxBodyLength?: number, maxContentLength?: number, defaultHeaders?: Record<string, unknown>, axios?: AxiosInstance, refreshDefaultQueryString?: () => Record<string, unknown>, refreshDefaultHeaders?: () => Record<string, unknown>, getCorrelationId?: () => string | undefined);
+    constructor(baseurl?: string, defaultQueryString?: Record<string, unknown>, maxBodyLength?: number, maxContentLength?: number, defaultHeaders?: AxiosRequestHeaders, axios?: AxiosInstance, refreshDefaultQueryString?: () => Record<string, unknown>, refreshDefaultHeaders?: () => AxiosRequestHeaders, getCorrelationId?: () => string | undefined);
     // (undocumented)
     protected request<T>(requestConfig: AxiosRequestConfig, statusCode: number, canRetry?: boolean): Promise<T>;
 }
@@ -44,10 +45,19 @@ export const choose: () => string;
 export function convertSummaryTreeToWholeSummaryTree(parentHandle: string | undefined, tree: ISummaryTree, path?: string, rootNodeName?: string): IWholeSummaryTree;
 
 // @public
-export function convertWholeFlatSummaryToSnapshotTreeAndBlobs(flatSummary: IWholeFlatSummary): INormalizedWholeSummary;
+export function convertWholeFlatSummaryToSnapshotTreeAndBlobs(flatSummary: IWholeFlatSummary, treePrefixToRemove?: string): INormalizedWholeSummary;
+
+// @public (undocumented)
+export const CorrelationIdHeaderName = "x-correlation-id";
+
+// @public
+export function createFluidServiceNetworkError(statusCode: number, errorData?: INetworkErrorDetails | string): NetworkError;
 
 // @public (undocumented)
 export const defaultHash = "00000000";
+
+// @public (undocumented)
+export const DriverVersionHeaderName = "x-driver-version";
 
 // @public (undocumented)
 export type ExtendedSummaryObject = SummaryObject | IEmbeddedSummaryHandle;
@@ -65,7 +75,7 @@ export const getAuthorizationTokenFromCredentials: (credentials: ICredentials) =
 export function getNextHash(message: ISequencedDocumentMessage, lastHash: string): string;
 
 // @public (undocumented)
-export function getOrCreateRepository(endpoint: string, owner: string, repository: string): Promise<void>;
+export function getOrCreateRepository(endpoint: string, owner: string, repository: string, headers?: AxiosRequestHeaders): Promise<void>;
 
 // @public (undocumented)
 export function getRandomName(connector?: string, capitalize?: boolean): string;
@@ -306,6 +316,15 @@ export interface IHistorian extends IGitService {
 }
 
 // @public
+export interface INetworkErrorDetails {
+    canRetry?: boolean;
+    isFatal?: boolean;
+    message?: string;
+    retryAfter?: number;
+    retryAfterMs?: number;
+}
+
+// @public
 export interface INormalizedWholeSummary {
     // (undocumented)
     blobs: Map<string, ArrayBuffer>;
@@ -320,6 +339,19 @@ export interface IPatchRefParamsExternal extends resources.IPatchRefParams {
     // (undocumented)
     config?: IExternalWriterConfig;
 }
+
+// @public (undocumented)
+export interface ISession {
+    // (undocumented)
+    historianUrl: string;
+    // (undocumented)
+    isSessionAlive: boolean;
+    // (undocumented)
+    ordererUrl: string;
+}
+
+// @public (undocumented)
+export function isNetworkError(error: unknown): error is NetworkError;
 
 // @public (undocumented)
 export interface ISummaryTree extends ISummaryTree_2 {
@@ -450,11 +482,23 @@ export interface IWriteSummaryResponse {
     id: string;
 }
 
-// @public (undocumented)
+// @public
 export class NetworkError extends Error {
     constructor(
-    code: number, message: string);
+    code: number,
+    message: string,
+    canRetry?: boolean,
+    isFatal?: boolean,
+    retryAfterMs?: number);
+    readonly canRetry?: boolean;
     readonly code: number;
+    get details(): INetworkErrorDetails | string;
+    readonly isFatal?: boolean;
+    readonly retryAfter: number;
+    readonly retryAfterMs?: number;
+    toJSON(): INetworkErrorDetails & {
+        code: number;
+    };
 }
 
 // @public (undocumented)
@@ -483,19 +527,19 @@ export abstract class RestWrapper {
     // (undocumented)
     protected defaultQueryString: Record<string, unknown>;
     // (undocumented)
-    delete<T>(url: string, queryString?: Record<string, unknown>, headers?: Record<string, unknown>): Promise<T>;
+    delete<T>(url: string, queryString?: Record<string, unknown>, headers?: AxiosRequestHeaders): Promise<T>;
     // (undocumented)
     protected generateQueryString(queryStringValues: Record<string, unknown>): string;
     // (undocumented)
-    get<T>(url: string, queryString?: Record<string, unknown>, headers?: Record<string, unknown>): Promise<T>;
+    get<T>(url: string, queryString?: Record<string, unknown>, headers?: AxiosRequestHeaders): Promise<T>;
     // (undocumented)
     protected readonly maxBodyLength: number;
     // (undocumented)
     protected readonly maxContentLength: number;
     // (undocumented)
-    patch<T>(url: string, requestBody: any, queryString?: Record<string, unknown>, headers?: Record<string, unknown>): Promise<T>;
+    patch<T>(url: string, requestBody: any, queryString?: Record<string, unknown>, headers?: AxiosRequestHeaders): Promise<T>;
     // (undocumented)
-    post<T>(url: string, requestBody: any, queryString?: Record<string, unknown>, headers?: Record<string, unknown>): Promise<T>;
+    post<T>(url: string, requestBody: any, queryString?: Record<string, unknown>, headers?: AxiosRequestHeaders): Promise<T>;
     // (undocumented)
     protected abstract request<T>(options: AxiosRequestConfig, statusCode: number): Promise<T>;
 }
@@ -506,6 +550,9 @@ export class SummaryTreeUploadManager implements ISummaryUploadManager {
     // (undocumented)
     writeSummaryTree(summaryTree: ISummaryTree_2, parentHandle: string, summaryType: IWholeSummaryPayloadType, sequenceNumber?: number): Promise<string>;
     }
+
+// @public
+export function throwFluidServiceNetworkError(statusCode: number, errorData?: INetworkErrorDetails | string): never;
 
 // @public
 export function validateTokenClaims(token: string, documentId: string, tenantId: string): ITokenClaims;

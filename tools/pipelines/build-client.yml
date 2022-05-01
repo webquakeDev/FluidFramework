@@ -32,6 +32,7 @@ trigger:
   branches:
     include:
     - main
+    - next
     - release/*
   paths:
     include:
@@ -56,6 +57,7 @@ pr:
   branches:
     include:
     - main
+    - next
     - release/*
   paths:
     include:
@@ -80,16 +82,16 @@ extends:
     nonScopedPackages: ${{ parameters.nonScopedPackages }}
     buildDirectory: .
     tagName: client
-    poolBuild: Main
+    poolBuild: Large
     cgSubDirectory: packages
     checkoutSubmodules: true
     taskBundleAnalysis: true
 
     preCG:
     - task: UseNode@1
-      displayName: Use Node 12.x
+      displayName: Use Node 14.x
       inputs:
-        version: 12.x
+        version: 14.x
     - task: Npm@1
       displayName: npm ci
       inputs:

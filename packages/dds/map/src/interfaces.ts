@@ -3,9 +3,8 @@
  * Licensed under the MIT License.
  */
 
-import { ISequencedDocumentMessage } from "@fluidframework/protocol-definitions";
 import { ISharedObject, ISharedObjectEvents } from "@fluidframework/shared-object-base";
-import { IEvent, IEventProvider, IEventThisPlaceHolder } from "@fluidframework/common-definitions";
+import { IDisposable, IEvent, IEventProvider, IEventThisPlaceHolder } from "@fluidframework/common-definitions";
 
 /**
  * Type of "valueChanged" event parameter.
@@ -28,7 +27,7 @@ export interface IValueChanged {
  * @remarks
  * When used as a Map, operates on its keys.
  */
-export interface IDirectory extends Map<string, any>, IEventProvider<IDirectoryEvents> {
+export interface IDirectory extends Map<string, any>, IEventProvider<IDirectoryEvents>, Partial<IDisposable> {
     /**
      * The absolute path of the directory.
      */
@@ -42,19 +41,18 @@ export interface IDirectory extends Map<string, any>, IEventProvider<IDirectoryE
     get<T = any>(key: string): T | undefined;
 
     /**
-     * A form of get except it will only resolve the promise once the key exists in the directory.
-     * @param key - Key to retrieve from
-     * @returns The stored value once available
-     */
-    wait<T = any>(key: string): Promise<T>;
-
-    /**
      * Sets the value stored at key to the provided value.
      * @param key - Key to set at
      * @param value - Value to set
      * @returns The IDirectory itself
      */
     set<T = any>(key: string, value: T): this;
+
+    /**
+     * Get the number of sub directory within the directory.
+     * @returns The number of sub directory within a directory.
+     */
+    countSubDirectory?(): number;
 
     /**
      * Creates an IDirectory child of this IDirectory, or retrieves the existing IDirectory child if one with the
@@ -146,12 +144,10 @@ export interface ISharedDirectoryEvents extends ISharedObjectEvents {
     (event: "valueChanged", listener: (
         changed: IDirectoryValueChanged,
         local: boolean,
-        op: ISequencedDocumentMessage | null,
         target: IEventThisPlaceHolder,
     ) => void);
     (event: "clear", listener: (
         local: boolean,
-        op: ISequencedDocumentMessage | null,
         target: IEventThisPlaceHolder,
     ) => void);
 }
@@ -174,11 +170,26 @@ export interface ISharedDirectoryEvents extends ISharedObjectEvents {
  * - `local` - Whether the change originated from the this client.
  *
  * - `target` - The IDirectory itself.
+ *
+ * ### "disposed"
+ *
+ * The dispose event is emitted when this sub directory is deleted.
+ *
+ * #### Listener signature
+ *
+ * ```typescript
+ * (local: boolean, target: IEventThisPlaceHolder) => void
+ * ```
+ *
+ * - `target` - The IDirectory itself.
  */
 export interface IDirectoryEvents extends IEvent {
     (event: "containedValueChanged", listener: (
         changed: IValueChanged,
         local: boolean,
+        target: IEventThisPlaceHolder,
+    ) => void);
+    (event: "disposed", listener: (
         target: IEventThisPlaceHolder,
     ) => void);
 }
@@ -249,11 +260,9 @@ export interface ISharedMapEvents extends ISharedObjectEvents {
     (event: "valueChanged", listener: (
         changed: IValueChanged,
         local: boolean,
-        op: ISequencedDocumentMessage | null,
         target: IEventThisPlaceHolder) => void);
     (event: "clear", listener: (
         local: boolean,
-        op: ISequencedDocumentMessage | null,
         target: IEventThisPlaceHolder
     ) => void);
 }
@@ -268,13 +277,6 @@ export interface ISharedMap extends ISharedObject<ISharedMapEvents>, Map<string,
      * @returns The stored value, or undefined if the key is not set
      */
     get<T = any>(key: string): T | undefined;
-
-    /**
-     * A form of get except it will only resolve the promise once the key exists in the map.
-     * @param key - Key to retrieve from
-     * @returns The stored value once available
-     */
-    wait<T = any>(key: string): Promise<T>;
 
     /**
      * Sets the value stored at key to the provided value.

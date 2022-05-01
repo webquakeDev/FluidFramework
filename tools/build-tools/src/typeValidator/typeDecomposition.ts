@@ -116,16 +116,14 @@ export function decomposeType(
     // enums because they are unions that don't need to be decomposed
     // these still need to be converted to strings because they are defined symbols
     if (node.getAliasSymbol() || node.isEnum()) {
-        result.typeAsString = `"${result.typeAsString}""`;
+        result.typeAsString = `"${result.typeAsString}"`;
     }
 
     // type parameters can't be string literals and should not be replaced
     if (node.isTypeParameter()) {
         return result;
     }
-
     node = node as Type;
-
     // intersections bind more strongly than unions so split those second
     if (node.isUnion()) {
         return decomposeTypes(checker, node.getUnionTypes(), " | ");

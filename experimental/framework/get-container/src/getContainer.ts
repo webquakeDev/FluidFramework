@@ -4,9 +4,11 @@
  */
 
 import {
+    IContainer,
+    IFluidModuleWithDetails,
     IRuntimeFactory,
 } from "@fluidframework/container-definitions";
-import { Container, Loader } from "@fluidframework/container-loader";
+import { Loader } from "@fluidframework/container-loader";
 import { IRequest } from "@fluidframework/core-interfaces";
 import {
     IDocumentServiceFactory,
@@ -22,10 +24,15 @@ export interface IGetContainerParams {
 
 export async function createContainer(
     params: IGetContainerParams,
-): Promise<Container> {
-    const module = { fluidExport: params.containerRuntimeFactory };
-    const codeLoader = { load: async () => module };
+): Promise<IContainer> {
+    const load = async (): Promise<IFluidModuleWithDetails> => {
+        return {
+            module: { fluidExport: params.containerRuntimeFactory },
+            details: { package: "no-dynamic-package", config: {} },
+        };
+    };
 
+    const codeLoader = { load };
     const loader = new Loader({
         urlResolver: params.urlResolver,
         documentServiceFactory: params.documentServiceFactory,
@@ -43,10 +50,15 @@ export async function createContainer(
 
 export async function getContainer(
     params: IGetContainerParams,
-): Promise<Container> {
-    const module = { fluidExport: params.containerRuntimeFactory };
-    const codeLoader = { load: async () => module };
+): Promise<IContainer> {
+    const load = async (): Promise<IFluidModuleWithDetails> => {
+        return {
+            module: { fluidExport: params.containerRuntimeFactory },
+            details: { package: "no-dynamic-package", config: {} },
+        };
+    };
 
+    const codeLoader = { load };
     const loader = new Loader({
         urlResolver: params.urlResolver,
         documentServiceFactory: params.documentServiceFactory,

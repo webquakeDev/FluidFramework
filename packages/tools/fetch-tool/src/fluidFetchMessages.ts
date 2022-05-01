@@ -99,7 +99,7 @@ async function* loadAllSequencedMessages(
 
     try {
         await teststream.read();
-    } catch (error) {
+    } catch (error: any) {
         statusCode = error.getTelemetryProperties().statusCode;
         innerMostErrorCode = error.getTelemetryProperties().innerMostErrorCode;
         // if there is gap between ops, catch the error and check it is the error we need
@@ -164,7 +164,7 @@ async function* loadAllSequencedMessages(
         timeStart = Date.now();
         const deltaStream = await documentService.connectToDeltaStream(client);
         const initialMessages = deltaStream.initialMessages;
-        deltaStream.close();
+        deltaStream.dispose();
         console.log(`${Math.floor((Date.now() - timeStart) / 1000)} seconds to connect to web socket`);
 
         if (initialMessages) {

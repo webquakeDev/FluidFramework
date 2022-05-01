@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 
-import { IFluidHandle, IFluidLoadable, IFluidObject } from "@fluidframework/core-interfaces";
+import { IFluidHandle } from "@fluidframework/core-interfaces";
 import {
     BaseSegment,
     createGroupOp,
@@ -276,11 +276,9 @@ export class SparseMatrix extends SharedSegmentSequence<MatrixSegment> {
 
     public getItem(row: number, col: number):
         // The return type is defined explicitly here to prevent TypeScript from generating dynamic imports
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-arguments
-        Jsonable<string | number | boolean | IFluidHandle<IFluidObject & IFluidLoadable>> {
+        Jsonable<string | number | boolean | IFluidHandle> {
         const pos = rowColToPosition(row, col);
-        const { segment, offset } =
-            this.getContainingSegment(pos);
+        const { segment, offset } = this.getContainingSegment(pos);
         if (RunSegment.is(segment)) {
             // eslint-disable-next-line @typescript-eslint/no-unsafe-return
             return segment.items[offset];
@@ -351,7 +349,7 @@ export class SparseMatrix extends SharedSegmentSequence<MatrixSegment> {
         const removeColEnd = srcCol + numCols;
         const ops = [];
 
-        for (let r = 0, rowStart = 0; r < this.numRows; r++ , rowStart += maxCols) {
+        for (let r = 0, rowStart = 0; r < this.numRows; r++, rowStart += maxCols) {
             ops.push(this.client.removeRangeLocal(rowStart + removeColStart, rowStart + removeColEnd));
             const insertPos = rowStart + destCol;
             const segment = new PaddingSegment(numCols);

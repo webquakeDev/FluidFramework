@@ -6,8 +6,7 @@
 import { v4 as uuid } from "uuid";
 import { assert, Deferred } from "@fluidframework/common-utils";
 import { ITelemetryLogger } from "@fluidframework/common-definitions";
-import { fluidEpochMismatchError, throwOdspNetworkError } from "@fluidframework/odsp-doclib-utils";
-import { ThrottlingError, RateLimiter } from "@fluidframework/driver-utils";
+import { ThrottlingError, RateLimiter, NonRetryableError } from "@fluidframework/driver-utils";
 import { IConnected } from "@fluidframework/protocol-definitions";
 import {
     snapshotKey,
@@ -18,14 +17,16 @@ import {
     IOdspError,
 } from "@fluidframework/odsp-driver-definitions";
 import { DriverErrorType } from "@fluidframework/driver-definitions";
-import { PerformanceEvent, isValidLegacyError, isFluidError, normalizeError } from "@fluidframework/telemetry-utils";
-import { fetchAndParseAsJSONHelper, fetchArray, IOdspResponse } from "./odspUtils";
+import { PerformanceEvent, isFluidError, normalizeError } from "@fluidframework/telemetry-utils";
+import { fetchAndParseAsJSONHelper, fetchArray, fetchHelper, getOdspResolvedUrl, IOdspResponse } from "./odspUtils";
 import {
     IOdspCache,
     INonPersistentCache,
     IPersistedFileCache,
  } from "./odspCache";
 import { IVersionedValueWithEpoch, persistedCacheValueVersion } from "./contracts";
+import { ClpCompliantAppHeader } from "./contractsPublic";
+import { pkgVersion as driverVersion } from "./packageVersion";
 
 export type FetchType = "blob" | "createBlob" | "createFile" | "joinSession" | "ops" | "test" | "snapshotTree" |
     "treesLatest" | "uploadSummary" | "push" | "versions";
@@ -33,6 +34,9 @@ export type FetchType = "blob" | "createBlob" | "createFile" | "joinSession" | "
 export type FetchTypeInternal = FetchType | "cache";
 
 export const Odsp409Error = "Odsp409Error";
+
+// Please update the README file in odsp-driver-definitions if you change the defaultCacheExpiryTimeoutMs.
+export const defaultCacheExpiryTimeoutMs: number = 2 * 24 * 60 * 60 * 1000;
 
 /**
  * This class is a wrapper around fetch calls. It adds epoch to the request made so that the
@@ -75,15 +79,36 @@ export class EpochTracker implements IPersistedFileCache {
         entry: IEntry,
     ): Promise<any> {
         try {
+            // Return undefined so that the ops/snapshots are grabbed from the server instead of the cache
             const value: IVersionedValueWithEpoch = await this.cache.get(this.fileEntryFromEntry(entry));
+            // Version mismatch between what the runtime expects and what it recieved.
+            // The cached value should not be used
             if (value === undefined || value.version !== persistedCacheValueVersion) {
                 return undefined;
             }
             assert(value.fluidEpoch !== undefined, 0x1dc /* "all entries have to have epoch" */);
             if (this._fluidEpoch === undefined) {
                 this.setEpoch(value.fluidEpoch, true, "cache");
+            // Epoch mismatch, the cached value is considerably different from what the current state of
+            // the runtime and should not be used
             } else if (this._fluidEpoch !== value.fluidEpoch) {
                 return undefined;
+            }
+            // Expire the cached snapshot if it's older than the defaultCacheExpiryTimeoutMs and immediately
+            // expire all old caches that do not have cacheEntryTime
+            if (entry.type === snapshotKey) {
+                const cacheTime = value.value?.cacheEntryTime;
+                const currentTime = Date.now();
+                if (cacheTime === undefined || currentTime - cacheTime >= defaultCacheExpiryTimeoutMs) {
+                    this.logger.sendTelemetryEvent(
+                        {
+                            eventName: "odspVersionsCacheExpired",
+                            duration: currentTime - cacheTime,
+                            maxCacheAgeMs: defaultCacheExpiryTimeoutMs,
+                        });
+                    await this.removeEntries();
+                    return undefined;
+                }
             }
             // eslint-disable-next-line @typescript-eslint/no-unsafe-return
             return value.value;
@@ -95,6 +120,11 @@ export class EpochTracker implements IPersistedFileCache {
 
     public async put(entry: IEntry, value: any) {
         assert(this._fluidEpoch !== undefined, 0x1dd /* "no epoch" */);
+        // For snapshots, the value should have the cacheEntryTime. This will be used to expire snapshots older
+        // than the defaultCacheExpiryTimeoutMs.
+        if (entry.type === snapshotKey) {
+            value.cacheEntryTime = value.cacheEntryTime ?? Date.now();
+        }
         const data: IVersionedValueWithEpoch = {
             value,
             version: persistedCacheValueVersion,
@@ -136,26 +166,54 @@ export class EpochTracker implements IPersistedFileCache {
      * @param fetchOptions - fetch options for request containing body, headers etc.
      * @param fetchType - method for which fetch is called.
      * @param addInBody - Pass True if caller wants to add epoch in post body.
+     * @param fetchReason - fetch reason to add to the request.
      */
     public async fetchAndParseAsJSON<T>(
         url: string,
         fetchOptions: RequestInit,
         fetchType: FetchType,
         addInBody: boolean = false,
+        fetchReason?: string,
     ): Promise<IOdspResponse<T>> {
-        const clientCorelationId = this.formatClientCorelationId();
+        return this.fetchCore<T>(url, fetchOptions, fetchAndParseAsJSONHelper, fetchType, addInBody, fetchReason);
+    }
+
+    /**
+     * Api to fetch the response for given request and parse it as json.
+     * @param url - url of the request
+     * @param fetchOptions - fetch options for request containing body, headers etc.
+     * @param fetchType - method for which fetch is called.
+     * @param addInBody - Pass True if caller wants to add epoch in post body.
+     * @param fetchReason - fetch reason to add to the request.
+     */
+    public async fetch(
+        url: string,
+        fetchOptions: RequestInit,
+        fetchType: FetchType,
+        addInBody: boolean = false,
+        fetchReason?: string,
+    ) {
+        return this.fetchCore<Response>(url, fetchOptions, fetchHelper, fetchType, addInBody, fetchReason);
+    }
+
+    private async fetchCore<T>(
+        url: string,
+        fetchOptions: { [index: string]: any },
+        fetcher: (url: string, fetchOptions: { [index: string]: any }) => Promise<IOdspResponse<T>>,
+        fetchType: FetchType,
+        addInBody: boolean = false,
+        fetchReason?: string,
+    ) {
+        const clientCorrelationId = this.formatClientCorrelationId(fetchReason);
         // Add epoch in fetch request.
-        this.addEpochInRequest(fetchOptions, addInBody, clientCorelationId);
+        this.addEpochInRequest(fetchOptions, addInBody, clientCorrelationId);
         let epochFromResponse: string | undefined;
         return this.rateLimiter.schedule(
-            async () => fetchAndParseAsJSONHelper<T>(url, fetchOptions),
+            async () => fetcher(url, fetchOptions),
         ).then((response) => {
             epochFromResponse = response.headers.get("x-fluid-epoch");
             this.validateEpochFromResponse(epochFromResponse, fetchType);
-            response.commonSpoHeaders = {
-                ...response.commonSpoHeaders,
-                "X-RequestStats": clientCorelationId,
-            };
+            response.propsToLog.XRequestStatsHeader = clientCorrelationId;
             return response;
         }).catch(async (error) => {
             // Get the server epoch from error in case we don't have it as if undefined we won't be able
@@ -166,8 +224,7 @@ export class EpochTracker implements IPersistedFileCache {
             await this.checkForEpochError(error, epochFromResponse, fetchType);
             throw error;
         }).catch((error) => {
-            const fluidError = normalizeError(error, {props: {"X-RequestStats": clientCorelationId}});
-            // eslint-disable-next-line @typescript-eslint/no-throw-literal
+            const fluidError = normalizeError(error, { props: { XRequestStatsHeader: clientCorrelationId } });
             throw fluidError;
         });
     }
@@ -178,52 +235,32 @@ export class EpochTracker implements IPersistedFileCache {
      * @param fetchOptions - fetch options for request containing body, headers etc.
      * @param fetchType - method for which fetch is called.
      * @param addInBody - Pass True if caller wants to add epoch in post body.
+     * @param fetchReason - fetch reason to add to the request.
      */
     public async fetchArray(
         url: string,
-        fetchOptions: {[index: string]: any},
+        fetchOptions: { [index: string]: any },
         fetchType: FetchType,
         addInBody: boolean = false,
+        fetchReason?: string,
     ) {
-        const clientCorelationId = this.formatClientCorelationId();
-        // Add epoch in fetch request.
-        this.addEpochInRequest(fetchOptions, addInBody, clientCorelationId);
-        let epochFromResponse: string | undefined;
-        return this.rateLimiter.schedule(
-            async () => fetchArray(url, fetchOptions),
-        ).then((response) => {
-            epochFromResponse = response.headers.get("x-fluid-epoch");
-            this.validateEpochFromResponse(epochFromResponse, fetchType);
-            response.commonSpoHeaders = {
-                ...response.commonSpoHeaders,
-                "X-RequestStats": clientCorelationId,
-            };
-            return response;
-        }).catch(async (error) => {
-            // Get the server epoch from error in case we don't have it as if undefined we won't be able
-            // to mark it as epoch error.
-            if (epochFromResponse === undefined) {
-                epochFromResponse = (error as IOdspError).serverEpoch;
-            }
-            await this.checkForEpochError(error, epochFromResponse, fetchType);
-            throw error;
-        }).catch((error) => {
-            const fluidError = normalizeError(error, {props: {"X-RequestStats": clientCorelationId}});
-            // eslint-disable-next-line @typescript-eslint/no-throw-literal
-            throw fluidError;
-        });
+        return this.fetchCore<ArrayBuffer>(url, fetchOptions, fetchArray, fetchType, addInBody, fetchReason);
     }
 
     private addEpochInRequest(
         fetchOptions: RequestInit,
         addInBody: boolean,
-        clientCorelationId: string,
+        clientCorrelationId: string,
     ) {
+        const isClpCompliantApp = getOdspResolvedUrl(this.fileEntry.resolvedUrl).isClpCompliantApp;
         if (addInBody) {
-            const headers: {[key: string]: string} = {};
-            headers["X-RequestStats"] = clientCorelationId;
+            const headers: { [key: string]: string } = {};
+            headers["X-RequestStats"] = clientCorrelationId;
             if (this.fluidEpoch !== undefined) {
                 headers["x-fluid-epoch"] = this.fluidEpoch;
+            }
+            if (isClpCompliantApp) {
+                headers[ClpCompliantAppHeader.isClpCompliantApp] = isClpCompliantApp.toString();
             }
             this.addParamInBody(fetchOptions, headers);
         } else {
@@ -234,14 +271,17 @@ export class EpochTracker implements IPersistedFileCache {
                 assert(fetchOptions.headers !== undefined, 0x282 /* "Headers should be present now" */);
                 fetchOptions.headers[key] = val;
             };
-            addHeader("X-RequestStats", clientCorelationId);
+            addHeader("X-RequestStats", clientCorrelationId);
             if (this.fluidEpoch !== undefined) {
                 addHeader("x-fluid-epoch", this.fluidEpoch);
+            }
+            if (isClpCompliantApp) {
+                addHeader(ClpCompliantAppHeader.isClpCompliantApp, isClpCompliantApp.toString());
             }
         }
     }
 
-    private addParamInBody(fetchOptions: RequestInit, headers: {[key: string]: string}) {
+    private addParamInBody(fetchOptions: RequestInit, headers: { [key: string]: string }) {
         // We use multi part form request for post body where we want to use this.
         // So extract the form boundary to mark the end of form.
         const body = fetchOptions.body;
@@ -259,8 +299,12 @@ export class EpochTracker implements IPersistedFileCache {
         fetchOptions.body = formParams.join("\r\n");
     }
 
-    private formatClientCorelationId() {
-        return `driverId=${this.driverId}, RequestNumber=${this.networkCallNumber++}`;
+    private formatClientCorrelationId(fetchReason?: string) {
+        const items: string[] = [`driverId=${this.driverId}`, `RequestNumber=${this.networkCallNumber++}`];
+        if (fetchReason !== undefined) {
+            items.push(`fetchReason=${fetchReason}`);
+        }
+        return items.join(", ");
     }
 
     protected validateEpochFromResponse(
@@ -268,7 +312,10 @@ export class EpochTracker implements IPersistedFileCache {
         fetchType: FetchTypeInternal,
         fromCache: boolean = false,
     ) {
-        this.checkForEpochErrorCore(epochFromResponse);
+        const error = this.checkForEpochErrorCore(epochFromResponse);
+        if (error !== undefined) {
+            throw error;
+        }
         if (epochFromResponse !== undefined) {
             if (this._fluidEpoch === undefined) {
                 this.setEpoch(epochFromResponse, fromCache, fetchType);
@@ -283,12 +330,8 @@ export class EpochTracker implements IPersistedFileCache {
         fromCache: boolean = false,
     ) {
         if (isFluidError(error) && error.errorType === DriverErrorType.fileOverwrittenInStorage) {
-            try {
-                // This will only throw if it is an epoch error.
-                this.checkForEpochErrorCore(epochFromResponse);
-            } catch (epochError) {
-                assert(isValidLegacyError(epochError),
-                    0x21f /* "epochError expected to be thrown by throwOdspNetworkError and of known type" */);
+            const epochError = this.checkForEpochErrorCore(epochFromResponse);
+            if (epochError !== undefined) {
                 epochError.addTelemetryProperties({
                     fromCache,
                     clientEpoch: this.fluidEpoch,
@@ -297,13 +340,15 @@ export class EpochTracker implements IPersistedFileCache {
                 this.logger.sendErrorEvent({ eventName: "fileOverwrittenInStorage" }, epochError);
                 // If the epoch mismatches, then clear all entries for such file entry from cache.
                 await this.removeEntries();
-                // eslint-disable-next-line @typescript-eslint/no-throw-literal
                 throw epochError;
             }
             // If it was categorized as epoch error but the epoch returned in response matches with the client epoch
             // then it was coherency 409, so rethrow it as throttling error so that it can retried. Default throttling
             // time is 1s.
-            throw new ThrottlingError("coherency409", error.message, 1, { [Odsp409Error]: true });
+            throw new ThrottlingError(
+                `Coherency 409: ${error.message}`,
+                1 /* retryAfterSeconds */,
+                { [Odsp409Error]: true, driverVersion });
         }
     }
 
@@ -312,7 +357,10 @@ export class EpochTracker implements IPersistedFileCache {
         // initializes this value. Sometimes response does not contain epoch as it is still in
         // implementation phase at server side. In that case also, don't compare it with our epoch value.
         if (this.fluidEpoch && epochFromResponse && (this.fluidEpoch !== epochFromResponse)) {
-            throwOdspNetworkError("epochMismatch", fluidEpochMismatchError);
+            // This is similar in nature to how fluidEpochMismatchError (409) is handled.
+            // Difference - client detected mismatch, instead of server detecting it.
+            return new NonRetryableError(
+                "Epoch mismatch", DriverErrorType.fileOverwrittenInStorage, { driverVersion });
         }
     }
 
@@ -364,17 +412,18 @@ export class EpochTrackerWithRedemption extends EpochTracker {
 
     public async fetchAndParseAsJSON<T>(
         url: string,
-        fetchOptions: {[index: string]: any},
+        fetchOptions: { [index: string]: any },
         fetchType: FetchType,
         addInBody: boolean = false,
+        fetchReason?: string,
     ): Promise<IOdspResponse<T>> {
         // Optimize the flow if we know that treesLatestDeferral was already completed by the timer we started
         // joinSession call. If we did - there is no reason to repeat the call as it will fail with same error.
         const completed = this.treesLatestDeferral.isCompleted;
 
         try {
-            return await super.fetchAndParseAsJSON<T>(url, fetchOptions, fetchType, addInBody);
-        } catch (error) {
+            return await super.fetchAndParseAsJSON<T>(url, fetchOptions, fetchType, addInBody, fetchReason);
+        } catch (error: any) {
             // Only handling here treesLatest. If createFile failed, we should never try to do joinSession.
             // Similar, if getVersions failed, we should not do any further storage calls.
             // So treesLatest is the only call that can have parallel joinSession request.
@@ -401,8 +450,8 @@ export class EpochTrackerWithRedemption extends EpochTracker {
             async (event) => {
                 const timeoutRes = 51; // anything will work here
                 let timer: ReturnType<typeof setTimeout>;
-                const timeoutP = new Promise<number>((accept) => {
-                    timer = setTimeout(() => { accept(timeoutRes); }, 15000);
+                const timeoutP = new Promise<number>((resolve) => {
+                    timer = setTimeout(() => { resolve(timeoutRes); }, 15000);
                 });
                 const res = await Promise.race([
                     timeoutP,
@@ -426,8 +475,7 @@ export function createOdspCacheAndTracker(
     persistedCacheArg: IPersistedCache,
     nonpersistentCache: INonPersistentCache,
     fileEntry: IFileEntry,
-    logger: ITelemetryLogger): ICacheAndTracker
-{
+    logger: ITelemetryLogger): ICacheAndTracker {
     const epochTracker = new EpochTrackerWithRedemption(persistedCacheArg, fileEntry, logger);
     return {
         cache: {

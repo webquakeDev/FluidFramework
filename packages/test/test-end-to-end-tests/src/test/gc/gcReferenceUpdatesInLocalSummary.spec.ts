@@ -47,7 +47,7 @@ class TestDataObject extends DataObject {
     }
 
     protected async hasInitialized() {
-        const matrixHandle = await this.root.wait<IFluidHandle<SharedMatrix>>(this.matrixKey);
+        const matrixHandle = this.root.get<IFluidHandle<SharedMatrix>>(this.matrixKey);
         assert(matrixHandle !== undefined, "SharedMatrix not found");
         this.matrix = await matrixHandle.get();
 
@@ -56,7 +56,7 @@ class TestDataObject extends DataObject {
         this.matrix.insertCols(0, 3);
         this.matrix.openUndo(this.undoRedoStackManager);
 
-        const sharedStringHandle = await this.root.wait<IFluidHandle<SharedString>>(this.sharedStringKey);
+        const sharedStringHandle = this.root.get<IFluidHandle<SharedString>>(this.sharedStringKey);
         assert(sharedStringHandle !== undefined, "SharedMatrix not found");
         this.sharedString = await sharedStringHandle.get();
     }
@@ -74,11 +74,11 @@ describeFullCompat("GC reference updates in local summary", (getTestObjectProvid
     const factory = new DataObjectFactory(
         "TestDataObject",
         TestDataObject,
-        [ SharedMatrix.getFactory(), SharedString.getFactory() ],
+        [SharedMatrix.getFactory(), SharedString.getFactory()],
         []);
 
     const runtimeOptions: IContainerRuntimeOptions = {
-        summaryOptions: { generateSummaries: false },
+        summaryOptions: { disableSummaries: true },
         gcOptions: { gcAllowed: true },
     };
     const runtimeFactory = new ContainerRuntimeFactoryWithDefaultDataStore(
@@ -112,7 +112,7 @@ describeFullCompat("GC reference updates in local summary", (getTestObjectProvid
 
         let dataStoreTree: ISummaryTree | undefined;
         const channelsTree = (summary.tree[".channels"] as ISummaryTree)?.tree ?? summary.tree;
-        for (const [ id, summaryObject ] of Object.entries(channelsTree)) {
+        for (const [id, summaryObject] of Object.entries(channelsTree)) {
             if (id === dataStoreId) {
                 assert(
                     summaryObject.type === SummaryType.Tree,

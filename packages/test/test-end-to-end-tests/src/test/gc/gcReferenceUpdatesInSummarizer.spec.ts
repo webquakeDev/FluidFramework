@@ -11,7 +11,12 @@ import {
 } from "@fluidframework/aqueduct";
 import { TelemetryNullLogger } from "@fluidframework/common-utils";
 import { IContainer, LoaderHeader } from "@fluidframework/container-definitions";
-import { IAckedSummary, IContainerRuntimeOptions, SummaryCollection } from "@fluidframework/container-runtime";
+import {
+    IAckedSummary,
+    IContainerRuntimeOptions,
+    RuntimeHeaders,
+    SummaryCollection,
+} from "@fluidframework/container-runtime";
 import { IFluidHandle, IRequest } from "@fluidframework/core-interfaces";
 import { SharedMatrix } from "@fluidframework/matrix";
 import { Marker, ReferenceType, reservedMarkerIdKey } from "@fluidframework/merge-tree";
@@ -21,6 +26,7 @@ import { SharedString } from "@fluidframework/sequence";
 import { ITestObjectProvider } from "@fluidframework/test-utils";
 import { describeFullCompat } from "@fluidframework/test-version-utils";
 import { UndoRedoStackManager } from "@fluidframework/undo-redo";
+import { IContainerRuntimeBase } from "@fluidframework/runtime-definitions";
 
 class TestDataObject extends DataObject {
     public get _root() {
@@ -47,7 +53,7 @@ class TestDataObject extends DataObject {
     }
 
     protected async hasInitialized() {
-        const matrixHandle = await this.root.wait<IFluidHandle<SharedMatrix>>(this.matrixKey);
+        const matrixHandle = this.root.get<IFluidHandle<SharedMatrix>>(this.matrixKey);
         assert(matrixHandle !== undefined, "SharedMatrix not found");
         this.matrix = await matrixHandle.get();
 
@@ -56,7 +62,7 @@ class TestDataObject extends DataObject {
         this.matrix.insertCols(0, 3);
         this.matrix.openUndo(this.undoRedoStackManager);
 
-        const sharedStringHandle = await this.root.wait<IFluidHandle<SharedString>>(this.sharedStringKey);
+        const sharedStringHandle = this.root.get<IFluidHandle<SharedString>>(this.sharedStringKey);
         assert(sharedStringHandle !== undefined, "SharedMatrix not found");
         this.sharedString = await sharedStringHandle.get();
     }
@@ -77,7 +83,7 @@ describeFullCompat("GC reference updates in summarizer", (getTestObjectProvider)
     const factory = new DataObjectFactory(
         "TestDataObject",
         TestDataObject,
-        [ SharedMatrix.getFactory(), SharedString.getFactory() ],
+        [SharedMatrix.getFactory(), SharedString.getFactory()],
         []);
 
     const IdleDetectionTime = 100;
@@ -87,7 +93,6 @@ describeFullCompat("GC reference updates in summarizer", (getTestObjectProvider)
     };
     const runtimeOptions: IContainerRuntimeOptions = {
         summaryOptions: {
-            generateSummaries: true,
             initialSummarizerDelayMs: 10,
             summaryConfigOverrides,
         },
@@ -95,13 +100,15 @@ describeFullCompat("GC reference updates in summarizer", (getTestObjectProvider)
             gcAllowed: true,
         },
     };
+    const innerRequestHandler = async (request: IRequest, runtime: IContainerRuntimeBase) =>
+        runtime.IFluidHandleContext.resolveHandle(request);
     const runtimeFactory = new ContainerRuntimeFactoryWithDefaultDataStore(
         factory,
         [
             [factory.type, Promise.resolve(factory)],
         ],
         undefined,
-        undefined,
+        [innerRequestHandler],
         runtimeOptions,
     );
 
@@ -153,7 +160,7 @@ describeFullCompat("GC reference updates in summarizer", (getTestObjectProvider)
             const dataStore2 = await factory.createInstance(mainDataStore._context.containerRuntime);
 
             // The request to use to load dataStore2.
-            const request: IRequest = { url: dataStore2.id, headers: { externalRequest: true } };
+            const request: IRequest = { url: dataStore2.id, headers: { [RuntimeHeaders.externalRequest]: true } };
 
             // Add the handle of dataStore2 to the matrix to mark it as referenced.
             {
@@ -191,7 +198,7 @@ describeFullCompat("GC reference updates in summarizer", (getTestObjectProvider)
             const dataStore2 = await factory.createInstance(mainDataStore._context.containerRuntime);
 
             // The request to use to load dataStore2.
-            const request: IRequest = { url: dataStore2.id, headers: { externalRequest: true } };
+            const request: IRequest = { url: dataStore2.id, headers: { [RuntimeHeaders.externalRequest]: true } };
 
             // Add and then remove the handle of dataStore2 to the matrix to mark it as unreferenced.
             {
@@ -254,7 +261,7 @@ describeFullCompat("GC reference updates in summarizer", (getTestObjectProvider)
             const dataStore2 = await factory.createInstance(mainDataStore._context.containerRuntime);
 
             // The request to use to load dataStore2.
-            const request: IRequest = { url: dataStore2.id, headers: { externalRequest: true } };
+            const request: IRequest = { url: dataStore2.id, headers: { [RuntimeHeaders.externalRequest]: true } };
 
             // Add the handle of dataStore2 to the shared string to mark it as referenced.
             {

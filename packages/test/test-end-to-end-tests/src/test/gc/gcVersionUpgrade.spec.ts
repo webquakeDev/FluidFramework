@@ -23,12 +23,13 @@ import {
     ISummaryTree,
     SummaryType,
 } from "@fluidframework/protocol-definitions";
-import { channelsTreeName } from "@fluidframework/runtime-definitions";
+import { channelsTreeName, IContainerRuntimeBase } from "@fluidframework/runtime-definitions";
 import { requestFluidObject } from "@fluidframework/runtime-utils";
 import { ITestObjectProvider } from "@fluidframework/test-utils";
 import { describeFullCompat } from "@fluidframework/test-version-utils";
+import { IRequest } from "@fluidframework/core-interfaces";
+import { loadSummarizer, TestDataObject, submitAndAckSummary } from "../mockSummarizerClient";
 import { wrapDocumentServiceFactory } from "./gcDriverWrappers";
-import { loadSummarizer, TestDataObject, submitAndAckSummary } from "./mockSummarizerClient";
 
 /**
  * Runtime factory that increments the current GC version of the container runtime it creates. This is used to simulate
@@ -59,16 +60,20 @@ describeFullCompat("GC version upgrade", (getTestObjectProvider) => {
         []);
 
     const runtimeOptions: IContainerRuntimeOptions = {
-        summaryOptions: { generateSummaries: false },
+        summaryOptions: { disableSummaries: true },
         gcOptions: { gcAllowed: true },
     };
+
+    const innerRequestHandler = async (request: IRequest, runtime: IContainerRuntimeBase) =>
+        runtime.IFluidHandleContext.resolveHandle(request);
+
     const defaultRuntimeFactory = new ContainerRuntimeFactoryWithDefaultDataStore(
         factory,
         [
             [factory.type, Promise.resolve(factory)],
         ],
         undefined,
-        undefined,
+        [innerRequestHandler],
         runtimeOptions,
     );
 
@@ -197,7 +202,7 @@ describeFullCompat("GC version upgrade", (getTestObjectProvider) => {
                 [factory.type, Promise.resolve(factory)],
             ],
             undefined,
-            undefined,
+            [innerRequestHandler],
             runtimeOptions,
         );
 
@@ -232,7 +237,7 @@ describeFullCompat("GC version upgrade", (getTestObjectProvider) => {
                 [factory.type, Promise.resolve(factory)],
             ],
             undefined,
-            undefined,
+            [innerRequestHandler],
             runtimeOptions,
         );
 

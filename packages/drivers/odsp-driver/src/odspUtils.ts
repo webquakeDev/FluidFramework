@@ -5,19 +5,20 @@
 
 import { ITelemetryProperties, ITelemetryBaseLogger, ITelemetryLogger } from "@fluidframework/common-definitions";
 import { IResolvedUrl, DriverErrorType } from "@fluidframework/driver-definitions";
-import { isOnline, OnlineStatus } from "@fluidframework/driver-utils";
+import {
+    isOnline,
+    OnlineStatus,
+    RetryableError,
+    NonRetryableError,
+    NetworkErrorBasic,
+} from "@fluidframework/driver-utils";
 import { assert, performance } from "@fluidframework/common-utils";
 import { ISequencedDocumentMessage, ISnapshotTree } from "@fluidframework/protocol-definitions";
 import { ChildLogger, PerformanceEvent, wrapError } from "@fluidframework/telemetry-utils";
 import {
     fetchIncorrectResponse,
-    offlineFetchFailureStatusCode,
-    fetchFailureStatusCode,
-    fetchTimeoutStatusCode,
     throwOdspNetworkError,
     getSPOAndGraphRequestIdsFromResponse,
-    fetchTokenErrorCode,
-    createOdspNetworkError,
 } from "@fluidframework/odsp-doclib-utils";
 import {
     IOdspResolvedUrl,
@@ -31,9 +32,10 @@ import {
     ICacheEntry,
     snapshotKey,
     InstrumentedStorageTokenFetcher,
+    IOdspUrlParts,
 } from "@fluidframework/odsp-driver-definitions";
 import { fetch } from "./fetch";
-import { pkgVersion } from "./packageVersion";
+import { pkgVersion as driverVersion } from "./packageVersion";
 import { IOdspSnapshot } from "./contracts";
 
 export const getWithRetryForTokenRefreshRepeat = "getWithRetryForTokenRefreshRepeat";
@@ -51,7 +53,7 @@ export interface ISnapshotContents {
 export interface IOdspResponse<T> {
     content: T;
     headers: Map<string, string>;
-    commonSpoHeaders: ITelemetryProperties;
+    propsToLog: ITelemetryProperties;
     duration: number,
 }
 
@@ -82,7 +84,7 @@ export async function getWithRetryForTokenRefresh<T>(get: (options: TokenFetchOp
             case DriverErrorType.authorizationError:
                 return get({ ...options, claims: e.claims, tenantId: e.tenantId });
 
-            case DriverErrorType.incorrectServerResponse: // fetchIncorrectResponse - some error on the wire, retry once
+            case DriverErrorType.incorrectServerResponse: // some error on the wire, retry once
             case OdspErrorType.fetchTokenError: // If the token was null, then retry once.
                 return get(options);
 
@@ -107,18 +109,23 @@ export async function fetchHelper(
         const response = fetchResponse as any as Response;
         // Let's assume we can retry.
         if (!response) {
-            throwOdspNetworkError("odspFetchErrorNoResponse", fetchIncorrectResponse);
+            throw new NonRetryableError(
+                // pre-0.58 error message: No response from fetch call
+                "No response from ODSP fetch call",
+                DriverErrorType.incorrectServerResponse,
+                { driverVersion });
         }
         if (!response.ok || response.status < 200 || response.status >= 300) {
             throwOdspNetworkError(
-                `odspFetchError [${response.status}]`, response.status, response, await response.text());
+                // pre-0.58 error message prefix: odspFetchError
+                `ODSP fetch error [${response.status}]`, response.status, response, await response.text());
         }
 
         const headers = headersToMap(response.headers);
         return {
             content: response,
             headers,
-            commonSpoHeaders: getSPOAndGraphRequestIdsFromResponse(headers),
+            propsToLog: getSPOAndGraphRequestIdsFromResponse(headers),
             duration: performance.now() - start,
         };
     }, (error) => {
@@ -130,23 +137,31 @@ export async function fetchHelper(
         if (errorText === "TypeError: Failed to fetch") {
             online = OnlineStatus.Offline;
         }
+        // This error is thrown by fetch() when AbortSignal is provided and it gets cancelled
         if (error.name === "AbortError") {
-            throwOdspNetworkError("timeoutDuringFetch", fetchTimeoutStatusCode);
+            throw new RetryableError(
+                "Fetch Timeout (AbortError)", OdspErrorType.fetchTimeout, { driverVersion });
         }
+        // TCP/IP timeout
         if (errorText.indexOf("ETIMEDOUT") !== -1) {
-            throwOdspNetworkError("timeoutDuringFetch(ETIMEDOUT)", fetchTimeoutStatusCode);
+            throw new RetryableError(
+                "Fetch Timeout (ETIMEDOUT)", OdspErrorType.fetchTimeout, { driverVersion });
         }
 
         //
         // WARNING: Do not log error object itself or any of its properties!
-        // It could container PII, like URI in message itself, or token in properties.
+        // It could contain PII, like URI in message itself, or token in properties.
         // It is also non-serializable object due to circular references.
         //
-        const failureCode = online === OnlineStatus.Offline ? offlineFetchFailureStatusCode : fetchFailureStatusCode;
-        throwOdspNetworkError(
-            `odspFetchThrewError [${failureCode}]`,
-            failureCode,
-        );
+        if (online === OnlineStatus.Offline) {
+            throw new RetryableError(
+                // pre-0.58 error message prefix: Offline
+                `ODSP fetch failure (Offline): ${errorText}`, DriverErrorType.offlineError, { driverVersion });
+        } else {
+            throw new RetryableError(
+                // pre-0.58 error message prefix: Fetch error
+                `ODSP fetch failure: ${errorText}`, DriverErrorType.fetchFailure, { driverVersion });
+        }
     });
 }
 
@@ -159,14 +174,14 @@ export async function fetchArray(
     requestInfo: RequestInfo,
     requestInit: RequestInit | undefined,
 ): Promise<IOdspResponse<ArrayBuffer>> {
-    const { content, headers, commonSpoHeaders, duration } = await fetchHelper(requestInfo, requestInit);
+    const { content, headers, propsToLog, duration } = await fetchHelper(requestInfo, requestInit);
 
     const arrayBuffer = await content.arrayBuffer();
-    commonSpoHeaders.bodySize = arrayBuffer.byteLength;
+    propsToLog.bodySize = arrayBuffer.byteLength;
     return {
         headers,
         content: arrayBuffer,
-        commonSpoHeaders,
+        propsToLog,
         duration,
     };
 }
@@ -180,31 +195,33 @@ export async function fetchAndParseAsJSONHelper<T>(
     requestInfo: RequestInfo,
     requestInit: RequestInit | undefined,
 ): Promise<IOdspResponse<T>> {
-    const { content, headers, commonSpoHeaders, duration } = await fetchHelper(requestInfo, requestInit);
-    // JSON.parse() can fail and message (that goes into telemetry) would container full request URI, including
-    // tokens... It fails for me with "Unexpected end of JSON input" quite often - an attempt to download big file
-    // (many ops) almost always ends up with this error - I'd guess 1% of op request end up here... It always
-    // succeeds on retry.
+    const { content, headers, propsToLog, duration } = await fetchHelper(requestInfo, requestInit);
+    let text: string | undefined;
     try {
-        const text = await content.text();
-
-        commonSpoHeaders.bodySize = text.length;
-        const res = {
-            headers,
-            content: JSON.parse(text),
-            commonSpoHeaders,
-            duration,
-        };
-        return res;
+        text = await content.text();
     } catch (e) {
+        // JSON.parse() can fail and message would container full request URI, including
+        // tokens... It fails for me with "Unexpected end of JSON input" quite often - an attempt to download big file
+        // (many ops) almost always ends up with this error - I'd guess 1% of op request end up here... It always
+        // succeeds on retry.
+        // So do not log error object itself.
         throwOdspNetworkError(
-            "errorWhileParsingFetchResponse",
+            // pre-0.58 error message: errorWhileParsingFetchResponse
+            "Error while parsing fetch response",
             fetchIncorrectResponse,
-            content,
-            undefined,
-            { error: Object(e) },
+            content, // response
+            text,
         );
     }
+
+    propsToLog.bodySize = text.length;
+    const res = {
+        headers,
+        content: JSON.parse(text),
+        propsToLog,
+        duration,
+    };
+    return res;
 }
 
 export interface INewFileInfo {
@@ -229,9 +246,9 @@ export const createOdspLogger = (logger?: ITelemetryBaseLogger) =>
     ChildLogger.create(
         logger,
         "OdspDriver",
-        { all :
+        { all:
             {
-                driverVersion: pkgVersion,
+                driverVersion,
             },
         });
 
@@ -260,7 +277,7 @@ export function evalBlobsAndTrees(snapshot: IOdspSnapshot) {
 
 export function toInstrumentedOdspTokenFetcher(
     logger: ITelemetryLogger,
-    resolvedUrl: IOdspResolvedUrl,
+    resolvedUrlParts: IOdspUrlParts,
     tokenFetcher: TokenFetcher<OdspResourceTokenFetchOptions>,
     throwOnNullToken: boolean,
 ): InstrumentedStorageTokenFetcher {
@@ -279,9 +296,7 @@ export function toInstrumentedOdspTokenFetcher(
             },
             async (event) => tokenFetcher({
                 ...options,
-                siteUrl: resolvedUrl.siteUrl,
-                driveId: resolvedUrl.driveId,
-                itemId: resolvedUrl.itemId,
+                ...resolvedUrlParts,
             }).then((tokenResponse) => {
                 const token = tokenFromResponse(tokenResponse);
                 // This event alone generates so many events that is materially impacts cost of telemetry
@@ -293,14 +308,24 @@ export function toInstrumentedOdspTokenFetcher(
                     event.end({ fromCache: isTokenFromCache(tokenResponse), isNull: token === null });
                 }
                 if (token === null && throwOnNullToken) {
-                    throwOdspNetworkError("tokenIsNull", fetchTokenErrorCode, undefined, undefined, { method: name });
+                    throw new NonRetryableError(
+                        // pre-0.58 error message: Token is null for ${name} call
+                        `The Host-provided token fetcher for ${name} call returned null`,
+                        OdspErrorType.fetchTokenError,
+                        { method: name, driverVersion });
                 }
                 return token;
             }, (error) => {
+                // There is an important but unofficial contract here where token providers can set canRetry: true
+                // to hook into the driver's retry logic (e.g. the retry loop when initiating a connection)
+                const rawCanRetry = error?.canRetry;
                 const tokenError = wrapError(
                     error,
-                    (errorMessage) => createOdspNetworkError("tokenFetcherFailed", errorMessage, fetchTokenErrorCode));
-                // eslint-disable-next-line @typescript-eslint/no-throw-literal
+                    (errorMessage) => new NetworkErrorBasic(
+                        `The Host-provided token fetcher for ${name} call threw an error: ${errorMessage}`,
+                        OdspErrorType.fetchTokenError,
+                        typeof rawCanRetry === "boolean" ? rawCanRetry : false /* canRetry */,
+                        { method: name, driverVersion }));
                 throw tokenError;
             }),
             { cancel: "generic" });

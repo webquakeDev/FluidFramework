@@ -117,11 +117,12 @@ export function create(
 
     // Create and register a socket.io connection on the server
     const io = new Server(server, {
-        // enable compatibility with socket.io v2 clients
+        // Enable compatibility with socket.io v2 clients
         allowEIO3: true,
-        perMessageDeflate: false,
-        // ensure long polling is never used
-        transports: [ "websocket" ],
+        // Indicates whether a connection should use compression
+        perMessageDeflate: true,
+        // Enable long-polling as a fallback
+        transports: ["websocket", "polling"],
         cors: {
             // Explicitly allow all origins by reflecting request origin.
             // As a service that has potential to host countless different client apps,

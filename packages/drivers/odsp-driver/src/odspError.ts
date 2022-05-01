@@ -10,10 +10,14 @@ import { IOdspSocketError } from "./contracts";
  * Returns network error based on error object from ODSP socket (IOdspSocketError)
  */
 export function errorObjectFromSocketError(socketError: IOdspSocketError, handler: string) {
-    const message = `OdspSocketError (${handler}): ${socketError.message}`;
-    return createOdspNetworkError(
-        `odspSocketError [${handler}]`,
+    // pre-0.58 error message prefix: OdspSocketError
+    const message = `ODSP socket error (${handler}): ${socketError.message}`;
+    const error = createOdspNetworkError(
         message,
         socketError.code,
         socketError.retryAfter);
+
+    error.addTelemetryProperties({ odspError: true, relayServiceError: true });
+
+    return error;
 }

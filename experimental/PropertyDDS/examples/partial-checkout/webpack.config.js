@@ -18,12 +18,12 @@ module.exports = env => {
                 },
                 {
                     test: /\.tsx?$/,
-                    loader: "ts-loader"
+                    loader: require.resolve("ts-loader")
                 }
             ]
         },
         output: {
-            filename: "[name].[contenthash].js",
+            filename: "[name].[hash].js",
         },
         plugins: [
             new HtmlWebpackPlugin({

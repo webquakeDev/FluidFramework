@@ -8,10 +8,9 @@ const common = require('./webpack.common.js');
 
 const fs = require('fs');
 const path = require('path');
-const assert = require('assert');
 
 const { CleanWebpackPlugin } = require('clean-webpack-plugin');
-const merge = require('webpack-merge');
+const { merge } = require('webpack-merge');
 const _ = require('underscore');
 
 const baseConfig = require('./webpack.base.js');
@@ -127,7 +126,7 @@ const CommonWebpackLibTSConfig = function (args) {
           test: /\.[tj]sx?$/,
           exclude: [/node_modules/, /\.min\.js$/],
           use: {
-            loader: 'babel-loader',
+            loader: require.resolve('babel-loader'),
             options: {
               babelrc: false,
               presets: [

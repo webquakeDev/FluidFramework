@@ -4,10 +4,11 @@
  */
 
  /**
+  * @deprecated in favor of {@link @fluidframework/container-definitions/fluidPackage.ts#IFluidPackageEnvironment}
+  * to have code loading modules in same package.
   * Specifies an environment on Fluid property of a IFluidPackage
   */
 export interface IFluidPackageEnvironment {
-
     /**
      * The name of the target. For a browser environment, this could be umd for scripts
      * or css for styles.
@@ -30,6 +31,8 @@ export interface IFluidPackageEnvironment {
 }
 
 /**
+ * @deprecated in favor of {@link @fluidframework/container-definitions/fluidPackage.ts#IFluidPackage}
+ * to have code loading modules in same package.
  * Fluid-specific properties expected on a package to be loaded by the code loader.
  * While compatible with the npm package format it is not necessary that that package is an
  * npm package:
@@ -48,7 +51,7 @@ export interface IFluidPackage {
          * The name of the of the environment. This should be something like browser, or node
          * and contain the necessary targets for loading this code in that environment.
          */
-        [environment: string]:  undefined | IFluidPackageEnvironment;
+        [environment: string]: undefined | IFluidPackageEnvironment;
     };
     /**
      * General access for extended fields as specific usages will
@@ -59,6 +62,8 @@ export interface IFluidPackage {
 }
 
 /**
+ * @deprecated in favor of {@link @fluidframework/container-definitions/fluidPackage.ts#isFluidPackage}
+ * to have code loading modules in same package.
  * Check if the package.json defines a Fluid package
  * @param pkg - the package json data to check if it is a Fluid package.
  */
@@ -68,6 +73,8 @@ export const isFluidPackage = (pkg: any): pkg is Readonly<IFluidPackage> =>
     && typeof pkg?.fluid === "object";
 
 /**
+ * @deprecated in favor of {@link @fluidframework/container-definitions/fluidPackage.ts#IFluidCodeDetailsConfig}
+ * to have code loading modules in same package.
  * Package manager configuration. Provides a key value mapping of config values
  */
 export interface IFluidCodeDetailsConfig {
@@ -75,6 +82,8 @@ export interface IFluidCodeDetailsConfig {
 }
 
 /**
+ * @deprecated in favor of {@link @fluidframework/container-definitions/fluidPackage.ts#IFluidCodeDetails}
+ * to have code loading modules in same package.
  * Data structure used to describe the code to load on the Fluid document
  */
 export interface IFluidCodeDetails {
@@ -90,20 +99,35 @@ export interface IFluidCodeDetails {
     readonly config?: IFluidCodeDetailsConfig;
 }
 
-export const isFluidCodeDetails = (details: unknown): details is Readonly<IFluidCodeDetails> =>{
+/**
+ * @deprecated  in favor of {@link @fluidframework/container-definitions/fluidPackage.ts#isFluidCodeDetails}
+ * to have code loading modules in same package
+*/
+export const isFluidCodeDetails = (details: unknown): details is Readonly<IFluidCodeDetails> => {
     const maybeCodeDetails = details as Partial<IFluidCodeDetails> | undefined;
     return typeof maybeCodeDetails === "object"
         && (typeof maybeCodeDetails?.package === "string" || isFluidPackage(maybeCodeDetails?.package))
         && (maybeCodeDetails?.config === undefined || typeof maybeCodeDetails?.config === "object");
 };
 
+/**
+ * @deprecated  in favor of {@link @fluidframework/container-definitions/fluidPackage.ts#IFluidCodeDetailsComparer}
+ * to have code loading modules in same package.
+*/
 export const IFluidCodeDetailsComparer: keyof IProvideFluidCodeDetailsComparer = "IFluidCodeDetailsComparer";
 
+/**
+ * @deprecated  in favor of
+ * {@link @fluidframework/container-definitions/fluidPackage.ts#IProvideFluidCodeDetailsComparer}
+ * to have code loading modules in same package.
+*/
 export interface IProvideFluidCodeDetailsComparer {
     readonly IFluidCodeDetailsComparer: IFluidCodeDetailsComparer ;
 }
 
 /**
+ * @deprecated  in favor of {@link @fluidframework/container-definitions/fluidPackage.ts#IFluidCodeDetailsComparer}
+ * to have code loading modules in same package.
  * Provides capability to compare Fluid code details.
  */
 export interface IFluidCodeDetailsComparer extends IProvideFluidCodeDetailsComparer {

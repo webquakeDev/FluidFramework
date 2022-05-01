@@ -11,6 +11,8 @@ import {
     MongoManager,
     IThrottler,
     ICache,
+    ICollection,
+    IDocument,
 } from "@fluidframework/server-services-core";
 import { json, urlencoded } from "body-parser";
 import compression from "compression";
@@ -20,7 +22,7 @@ import express from "express";
 import morgan from "morgan";
 import { Provider } from "nconf";
 import * as winston from "winston";
-import { IAlfredTenant } from "@fluidframework/server-services-client";
+import { DriverVersionHeaderName, IAlfredTenant } from "@fluidframework/server-services-client";
 import { bindCorrelationId } from "@fluidframework/server-services-utils";
 import { RestLessServer } from "@fluidframework/server-services";
 import { logRequestMetric, Lumberjack } from "@fluidframework/server-services-telemetry";
@@ -47,8 +49,9 @@ export function create(
     singleUseTokenCache: ICache,
     storage: IDocumentStorage,
     appTenants: IAlfredTenant[],
-    mongoManager: MongoManager,
-    producer: IProducer) {
+    operationsDbMongoManager: MongoManager,
+    producer: IProducer,
+    documentsCollection: ICollection<IDocument>) {
     // Maximum REST request size
     const requestSize = config.get("alfred:restJsonSize");
 
@@ -76,7 +79,9 @@ export function create(
         app.use(morgan((tokens, req, res) => {
             const messageMetaData = {
                 method: tokens.method(req, res),
+                pathCategory: `${req.baseUrl}${req.route ? req.route.path : "PATH_UNAVAILABLE"}`,
                 url: tokens.url(req, res),
+                driverVersion: tokens.req(req, res, DriverVersionHeaderName),
                 status: tokens.status(req, res),
                 contentLength: tokens.res(req, res, "content-length"),
                 durationInMs: tokens["response-time"](req, res),
@@ -105,10 +110,11 @@ export function create(
         tenantManager,
         throttler,
         singleUseTokenCache,
-        mongoManager,
+        operationsDbMongoManager,
         storage,
         producer,
-        appTenants);
+        appTenants,
+        documentsCollection);
 
     app.use("/public", cors(), express.static(path.join(__dirname, "../../public")));
     app.use(routes.api);

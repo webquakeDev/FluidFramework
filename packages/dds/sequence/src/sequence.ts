@@ -3,14 +3,10 @@
  * Licensed under the MIT License.
  */
 import { Deferred, bufferToString, assert } from "@fluidframework/common-utils";
-import { IFluidSerializer } from "@fluidframework/core-interfaces";
 import { ChildLogger } from "@fluidframework/telemetry-utils";
 import {
-    FileMode,
     ISequencedDocumentMessage,
-    ITree,
     MessageType,
-    TreeEntry,
 } from "@fluidframework/protocol-definitions";
 import {
     IChannelAttributes,
@@ -42,8 +38,9 @@ import {
     ReferenceType,
     SegmentGroup,
 } from "@fluidframework/merge-tree";
-import { ObjectStoragePartition } from "@fluidframework/runtime-utils";
+import { ObjectStoragePartition, SummaryTreeBuilder } from "@fluidframework/runtime-utils";
 import {
+    IFluidSerializer,
     makeHandlesSerializable,
     parseHandles,
     SharedObject,
@@ -51,7 +48,7 @@ import {
     SummarySerializer,
 } from "@fluidframework/shared-object-base";
 import { IEventThisPlaceHolder } from "@fluidframework/common-definitions";
-import { IGarbageCollectionData } from "@fluidframework/runtime-definitions";
+import { ISummaryTreeWithStats } from "@fluidframework/runtime-definitions";
 
 import {
     IntervalCollection,
@@ -96,6 +93,8 @@ const contentPath = "content";
  * - `target` - The sequence itself.
  */
 export interface ISharedSegmentSequenceEvents extends ISharedObjectEvents {
+    (event: "createIntervalCollection",
+        listener: (label: string, local: boolean, target: IEventThisPlaceHolder) => void);
     (event: "sequenceDelta", listener: (event: SequenceDeltaEvent, target: IEventThisPlaceHolder) => void);
     (event: "maintenance",
         listener: (event: SequenceMaintenanceEvent, target: IEventThisPlaceHolder) => void);
@@ -117,7 +116,6 @@ export abstract class SharedSegmentSequence<T extends ISegment>
                     const props = {};
                     for (const key of Object.keys(r.propertyDeltas)) {
                         props[key] =
-                            // eslint-disable-next-line no-null/no-null
                             r.segment.properties[key] === undefined ? null : r.segment.properties[key];
                     }
                     if (lastAnnotate && lastAnnotate.pos2 === r.position &&
@@ -160,7 +158,7 @@ export abstract class SharedSegmentSequence<T extends ISegment>
     protected client: Client;
     // Deferred that triggers once the object is loaded
     protected loadedDeferred = new Deferred<void>();
-    // cache out going ops created when parital loading
+    // cache out going ops created when partial loading
     private readonly loadedDeferredOutgoingOps:
         [IMergeTreeOp, SegmentGroup | SegmentGroup[]][] = [];
     // cache incoming ops that arrive when partial loading
@@ -177,7 +175,7 @@ export abstract class SharedSegmentSequence<T extends ISegment>
     ) {
         super(id, dataStoreRuntime, attributes);
 
-        this.loadedDeferred.promise.catch((error)=>{
+        this.loadedDeferred.promise.catch((error) => {
             this.logger.sendErrorEvent({ eventName: "SequenceLoadFailed" }, error);
         });
 
@@ -318,7 +316,13 @@ export abstract class SharedSegmentSequence<T extends ISegment>
     /**
      * Resolves a remote client's position against the local sequence
      * and returns the remote client's position relative to the local
-     * sequence
+     * sequence. The client ref seq must be above the minimum sequence number
+     * or the return value will be undefined.
+     * Generally this method is used in conjunction with signals which provide
+     * point in time values for the below parameters, and is useful for things
+     * like displaying user position. It should not be used with persisted values
+     * as persisted values will quickly become invalid as the remoteClientRefSeq
+     * moves below the minimum sequence number
      * @param remoteClientPosition - The remote client's position to resolve
      * @param remoteClientRefSeq - The reference sequence number of the remote client
      * @param remoteClientId - The client id of the remote client
@@ -425,55 +429,42 @@ export abstract class SharedSegmentSequence<T extends ISegment>
         return sharedCollection;
     }
 
-    protected snapshotCore(serializer: IFluidSerializer): ITree {
-        const entries = [];
+    /**
+     * @returns an iterable object that enumerates the IntervalCollection labels
+     * Usage:
+     * const iter = this.getIntervalCollectionKeys();
+     * for (key of iter)
+     *     const collection = this.getIntervalCollection(key);
+     *     ...
+    */
+    public getIntervalCollectionLabels(): IterableIterator<string> {
+        return this.intervalMapKernel.keys();
+    }
+
+    protected summarizeCore(serializer: IFluidSerializer): ISummaryTreeWithStats {
+        const builder = new SummaryTreeBuilder();
+
         // conditionally write the interval collection blob
         // only if it has entries
         if (this.intervalMapKernel.size > 0) {
-            entries.push(
-                {
-                    mode: FileMode.File,
-                    path: snapshotFileName,
-                    type: TreeEntry.Blob,
-                    value: {
-                        contents: this.intervalMapKernel.serialize(serializer),
-                        encoding: "utf-8",
-                    },
-                });
+            builder.addBlob(snapshotFileName, this.intervalMapKernel.serialize(serializer));
         }
-        entries.push(
-            {
-                mode: FileMode.Directory,
-                path: contentPath,
-                type: TreeEntry.Tree,
-                value: this.snapshotMergeTree(serializer),
-            });
-        const tree: ITree = {
-            entries,
-        };
 
-        return tree;
+        builder.addWithStats(contentPath, this.summarizeMergeTree(serializer));
+
+        return builder.getSummaryTree();
     }
 
     /**
-     * Returns the GC data for this SharedMatrix. All the IFluidHandle's represent routes to other objects.
+     * Runs serializer over the GC data for this SharedMatrix.
+     * All the IFluidHandle's represent routes to other objects.
      */
-    protected getGCDataCore(): IGarbageCollectionData {
-        // Create a SummarySerializer and use it to serialize all the cells. It keeps track of all IFluidHandles that it
-        // serializes.
-        const serializer = new SummarySerializer(this.runtime.channelsRoutingContext);
-
+    protected processGCDataCore(serializer: SummarySerializer) {
         if (this.intervalMapKernel.size > 0) {
             this.intervalMapKernel.serialize(serializer);
         }
 
         this.client.serializeGCData(this.handle, serializer);
-
-        return {
-            gcNodes:{
-                ["/"]: serializer.getSerializedRoutes(),
-            },
-        };
     }
 
     /**
@@ -548,12 +539,12 @@ export abstract class SharedSegmentSequence<T extends ISegment>
                             || m.sequenceNumber <= collabWindow.currentSeq) {
                             throw new Error(`Invalid catchup operations in snapshot: ${
                                 JSON.stringify({
-                                    op:{
+                                    op: {
                                         seq: m.sequenceNumber,
                                         minSeq: m.minimumSequenceNumber,
-                                        refSeq:m.referenceSequenceNumber,
+                                        refSeq: m.referenceSequenceNumber,
                                     },
-                                    collabWindow:{
+                                    collabWindow: {
                                         seq: collabWindow.currentSeq,
                                         minSeq: collabWindow.minSeq,
                                     },
@@ -567,7 +558,7 @@ export abstract class SharedSegmentSequence<T extends ISegment>
                     this.loadFinished(error);
                 });
             if (this.dataStoreRuntime.options?.sequenceInitializeFromHeaderOnly !== true) {
-                // if we not doing parital load, await the catch up ops,
+                // if we not doing partial load, await the catch up ops,
                 // and the finalization of the load
                 await loadCatchUpOps;
             }
@@ -588,19 +579,9 @@ export abstract class SharedSegmentSequence<T extends ISegment>
             const handled = this.intervalMapKernel.tryProcessMessage(message.contents, local, message, localOpMetadata);
 
             if (!handled) {
-                this.processMergeTreeMsg(message);
+                this.processMergeTreeMsg(message, local);
             }
         }
-    }
-
-    protected registerCore() {
-        for (const value of this.intervalMapKernel.values()) {
-            if (SharedObject.is(value)) {
-                value.bindToContext();
-            }
-        }
-
-        this.client.startOrUpdateCollaboration(this.runtime.clientId);
     }
 
     protected didAttach() {
@@ -616,39 +597,45 @@ export abstract class SharedSegmentSequence<T extends ISegment>
         this.loadFinished();
     }
 
-    private snapshotMergeTree(serializer: IFluidSerializer): ITree {
+    /**
+     * {@inheritDoc @fluidframework/shared-object-base#SharedObjectCore.applyStashedOp}
+     */
+    protected applyStashedOp(content: any): unknown {
+        return this.client.applyStashedOp(content);
+    }
+
+    private summarizeMergeTree(serializer: IFluidSerializer): ISummaryTreeWithStats {
         // Are we fully loaded? If not, things will go south
         assert(this.loadedDeferred.isCompleted, 0x074 /* "Snapshot called when not fully loaded" */);
         const minSeq = this.runtime.deltaManager.minimumSequenceNumber;
 
         this.processMinSequenceNumberChanged(minSeq);
 
-        this.messagesSinceMSNChange.forEach((m) => m.minimumSequenceNumber = minSeq);
+        this.messagesSinceMSNChange.forEach((m) => { m.minimumSequenceNumber = minSeq; });
 
-        return this.client.snapshot(this.runtime, this.handle, serializer, this.messagesSinceMSNChange);
+        return this.client.summarize(this.runtime, this.handle, serializer, this.messagesSinceMSNChange);
     }
 
-    private processMergeTreeMsg(
-        rawMessage: ISequencedDocumentMessage) {
+    private processMergeTreeMsg(rawMessage: ISequencedDocumentMessage, local?: boolean) {
         const message = parseHandles(rawMessage, this.serializer);
 
         const ops: IMergeTreeDeltaOp[] = [];
-        function transfromOps(event: SequenceDeltaEvent) {
+        function transformOps(event: SequenceDeltaEvent) {
             ops.push(...SharedSegmentSequence.createOpsFromDelta(event));
         }
         const needsTransformation = message.referenceSequenceNumber !== message.sequenceNumber - 1;
         let stashMessage: Readonly<ISequencedDocumentMessage> = message;
         if (this.runtime.options?.newMergeTreeSnapshotFormat !== true) {
             if (needsTransformation) {
-                this.on("sequenceDelta", transfromOps);
+                this.on("sequenceDelta", transformOps);
             }
         }
 
-        this.client.applyMsg(message);
+        this.client.applyMsg(message, local);
 
         if (this.runtime.options?.newMergeTreeSnapshotFormat !== true) {
             if (needsTransformation) {
-                this.removeListener("sequenceDelta", transfromOps);
+                this.removeListener("sequenceDelta", transformOps);
                 // shallow clone the message as we only overwrite top level properties,
                 // like referenceSequenceNumber and content only
                 stashMessage = {
@@ -693,7 +680,7 @@ export abstract class SharedSegmentSequence<T extends ISegment>
                 throw error;
             } else {
                 // it is important this series remains synchronous
-                // first we stop defering incoming ops, and apply then all
+                // first we stop deferring incoming ops, and apply then all
                 this.deferIncomingOps = false;
                 while (this.loadedDeferredIncomingOps.length > 0) {
                     this.processCore(this.loadedDeferredIncomingOps.shift(), false, undefined);
@@ -713,11 +700,13 @@ export abstract class SharedSegmentSequence<T extends ISegment>
 
     private initializeIntervalCollections() {
         // Listen and initialize new SharedIntervalCollections
-        this.intervalMapKernel.eventEmitter.on("valueChanged", (ev: IValueChanged) => {
+        this.intervalMapKernel.eventEmitter.on("create", (ev: IValueChanged, local: boolean) => {
             const intervalCollection = this.intervalMapKernel.get<IntervalCollection<SequenceInterval>>(ev.key);
             if (!intervalCollection.attached) {
                 intervalCollection.attachGraph(this.client, ev.key);
             }
+            assert(ev.previousValue === undefined, 0x2c1 /* "Creating an interval that already exists?" */);
+            this.emit("createIntervalCollection", ev.key, local, this);
         });
 
         // Initialize existing SharedIntervalCollections
@@ -725,9 +714,5 @@ export abstract class SharedSegmentSequence<T extends ISegment>
             const intervalCollection = this.intervalMapKernel.get<IntervalCollection<SequenceInterval>>(key);
             intervalCollection.attachGraph(this.client, key);
         }
-    }
-
-    protected applyStashedOp() {
-        throw new Error("not implemented");
     }
 }

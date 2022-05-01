@@ -3,6 +3,12 @@
  * Licensed under the MIT License.
  */
 
+import { ILoaderOptions } from "@fluidframework/container-definitions";
+import { IContainerRuntimeOptions } from "@fluidframework/container-runtime";
+import { ConfigTypes } from "@fluidframework/telemetry-utils";
+import { TestDriverTypes } from "@fluidframework/test-driver-definitions";
+import { OptionsMatrix } from "@fluidframework/test-pairwise-generator";
+
 /** Type modeling the structure of the testConfig.json file */
 export interface ITestConfig {
     profiles: { [name: string]: ILoadTestConfig | undefined };
@@ -30,4 +36,15 @@ export interface ILoadTestConfig {
      * Number of "attachment" type blobs to add while detached. Note this is only supported on ODSP currently.
      */
     detachedBlobCount?: number,
+
+    /**
+     * Override loader options to force a specific value
+     */
+    optionOverrides?: Record<TestDriverTypes, OptionOverride | undefined>;
+}
+
+export interface OptionOverride{
+    loader?: Partial<OptionsMatrix<ILoaderOptions>>;
+    container?: Partial<OptionsMatrix<IContainerRuntimeOptions>>;
+    configurations?: OptionsMatrix<Record<string, ConfigTypes>>;
 }

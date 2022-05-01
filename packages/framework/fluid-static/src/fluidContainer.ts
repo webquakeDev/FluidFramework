@@ -3,10 +3,9 @@
  * Licensed under the MIT License.
  */
 import { TypedEventEmitter } from "@fluidframework/common-utils";
-import { Container } from "@fluidframework/container-loader";
 import { IFluidLoadable } from "@fluidframework/core-interfaces";
 import { IEvent, IEventProvider } from "@fluidframework/common-definitions";
-import { AttachState } from "@fluidframework/container-definitions";
+import { AttachState, IContainer, ConnectionState } from "@fluidframework/container-definitions";
 import { LoadableObjectClass, LoadableObjectRecord } from "./types";
 import { RootDataObject } from "./rootDataObject";
 
@@ -75,22 +74,33 @@ export interface IFluidContainerEvents extends IEvent {
 export interface IFluidContainer extends IEventProvider<IFluidContainerEvents> {
     /**
      * Whether the container is connected to the collaboration session.
+     * @deprecated - 0.58, This API will be removed in 1.0
+     * Check `connectionState === ConnectionState.Connected` instead
+     * See https://github.com/microsoft/FluidFramework/issues/9167 for context
      */
     readonly connected: boolean;
 
+    /**
+     * Provides the current connected state of the container
+     */
+    readonly connectionState: ConnectionState;
+
      /**
      * A container is considered **dirty** if it has local changes that have not yet been acknowledged by the service.
-     * acknowledged by the service. Closing the container while `isDirty === true` will result in the loss of these
-     * local changes. You should always check the `isDirty` flag before closing the container or navigating away
-     * from the page.
+     * You should always check the `isDirty` flag before closing the container or navigating away from the page.
+     * Closing the container while `isDirty === true` may result in the loss of operations that have not yet been
+     * acknowledged by the service.
      *
      * A container is considered dirty in the following cases:
      *
-     * 1. The container has local changes that have not yet been acknowledged by the service. These unacknowledged
-     * changes will be lost if the container is closed.
+     * 1. The container has been created in the detached state, and either it has not been attached yet or it is
+     * in the process of being attached (container is in `attaching` state). If container is closed prior to being
+     * attached, host may never know if the file was created or not.
      *
-     * 1. There is no network connection while making changes to the container. These changes cannot be
-     * acknowledged by the service until the network connection is restored.
+     * 2. The container was attached, but it has local changes that have not yet been saved to service endpoint.
+     * This occurs as part of normal op flow where pending operation (changes) are awaiting acknowledgement from the
+     * service. In some cases this can be due to lack of network connection. If the network connection is down,
+     * it needs to be restored for the pending changes to be acknowledged.
      */
      readonly isDirty: boolean;
 
@@ -119,6 +129,16 @@ export interface IFluidContainer extends IEventProvider<IFluidContainerEvents> {
     attach(): Promise<string>;
 
     /**
+     * Attempts to connect the container to the delta stream and process ops
+     */
+    connect?(): void;
+
+    /**
+     * Disconnects the container from the delta stream and stops processing ops
+     */
+    disconnect?(): void;
+
+    /**
      * Create a new data object or DDS of the specified type.  In order to share the data object or DDS with other
      * collaborators and retrieve it later, store its handle in a collection like a SharedDirectory from your
      * initialObjects.
@@ -143,7 +163,7 @@ export class FluidContainer extends TypedEventEmitter<IFluidContainerEvents> imp
     private readonly dirtyHandler = () => this.emit("dirty");
 
     public constructor(
-        private readonly container: Container,
+        private readonly container: IContainer,
         private readonly rootDataObject: RootDataObject,
     ) {
         super();
@@ -183,6 +203,13 @@ export class FluidContainer extends TypedEventEmitter<IFluidContainerEvents> imp
     }
 
     /**
+     * {@inheritDoc IFluidContainer.connectionState}
+     */
+     public get connectionState(): ConnectionState {
+        return this.container.connectionState;
+    }
+
+    /**
      * {@inheritDoc IFluidContainer.initialObjects}
      */
     public get initialObjects() {
@@ -194,6 +221,20 @@ export class FluidContainer extends TypedEventEmitter<IFluidContainerEvents> imp
      */
     public async attach(): Promise<string> {
         throw new Error("Cannot attach container. Container is not in detached state");
+    }
+
+    /**
+     * {@inheritDoc IFluidContainer.connect}
+     */
+    public async connect(): Promise<void> {
+        this.container.connect?.();
+    }
+
+    /**
+     * {@inheritDoc IFluidContainer.connect}
+     */
+    public async disconnect(): Promise<void> {
+        this.container.disconnect?.();
     }
 
     /**

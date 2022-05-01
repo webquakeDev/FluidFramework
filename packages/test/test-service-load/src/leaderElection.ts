@@ -40,12 +40,18 @@ export class LeaderElection {
         if (this.leaderId !== undefined && this.leaderId === this.dataStoreRuntime.clientId) {
             this.dataStoreRuntime.submitSignal("leaderMessage", "leaderMessage");
             this.updateLastPinged();
-        }else if(this.leaderId === undefined) {
-            this.logger.sendTelemetryEvent({eventName: "LeaderUndefinedEventError"});
-        }else {
+        } else if (this.leaderId === undefined) {
+            this.logger.sendTelemetryEvent({
+                eventName: "LeaderUndefinedEventError",
+                testHarnessEvent: true,
+            });
+        } else {
             const current = Date.now();
-            if(this.lastPinged !== undefined && current - this.lastPinged > this.leaderWait) {
-                this.logger.sendTelemetryEvent({eventName: "LeaderLostEventError"});
+            if (this.lastPinged !== undefined && current - this.lastPinged > this.leaderWait) {
+                this.logger.sendTelemetryEvent({
+                    eventName: "LeaderLostEventError",
+                    testHarnessEvent: true,
+                });
                 this.prevPing = this.lastPinged;
                 this.lastPinged = undefined;
             }
@@ -53,10 +59,12 @@ export class LeaderElection {
     }
 
     private handleSignal(signal: ISignalMessage) {
-        // eslint-disable-next-line no-null/no-null
-        if(signal.clientId !== null && signal.content === "leaderMessage") {
-            if(this.leaderId !== signal.clientId) {
-                this.logger.sendTelemetryEvent({eventName: "UnexpectedLeaderEventWarning"});
+        if (signal.clientId !== null && signal.content === "leaderMessage") {
+            if (this.leaderId !== signal.clientId) {
+                this.logger.sendTelemetryEvent({
+                    eventName: "UnexpectedLeaderEventWarning",
+                    testHarnessEvent: true,
+                });
             }
             this.updateLastPinged();
         }
@@ -64,9 +72,13 @@ export class LeaderElection {
 
     private updateLastPinged() {
         this.lastPinged = Date.now();
-        if(this.lastPinged === undefined && this.prevPing !== undefined) {
+        if (this.lastPinged === undefined && this.prevPing !== undefined) {
             const time = this.lastPinged - this.prevPing;
-            this.logger.sendTelemetryEvent({eventName: "LeaderFound", time});
+            this.logger.sendTelemetryEvent({
+                eventName: "LeaderFound",
+                time,
+                testHarnessEvent: true,
+            });
         }
     }
 

@@ -91,7 +91,7 @@ export interface IRuntimeSignaler {
  * deregistration.
  */
 export class Signaler extends TypedEventEmitter<IErrorEvent> implements ISignaler {
-    private readonly emitter  = new EventEmitter();
+    private readonly emitter = new EventEmitter();
 
     private readonly managerId: string | undefined;
 
@@ -117,7 +117,6 @@ export class Signaler extends TypedEventEmitter<IErrorEvent> implements ISignale
             // Only call listeners when the runtime is connected and if the signal has an
             // identifiable sender clientId.  The listener is responsible for deciding how
             // it wants to handle local/remote signals
-            // eslint-disable-next-line no-null/no-null
             if (this.signaler.connected && clientId !== null) {
                 this.emitter.emit(message.type, clientId, local, message.content);
             }
@@ -194,8 +193,7 @@ export class Signaler extends TypedEventEmitter<IErrorEvent> implements ISignale
  * users to get an ISignaler without a custom DO.  Where possible, consumers should instead
  * create a Signaler themselves instead of using the DO wrapper to avoid the DO overhead.
  */
-// eslint-disable-next-line @typescript-eslint/ban-types
-export class SignalManager extends DataObject<{}, undefined, IErrorEvent> implements EventEmitter, ISignaler {
+export class SignalManager extends DataObject<{ Events: IErrorEvent }> implements EventEmitter, ISignaler {
     private _manager: Signaler | undefined;
     private get manager(): Signaler {
         assert(this._manager !== undefined, 0x24b /* "internal signaler should be defined" */);
@@ -204,8 +202,7 @@ export class SignalManager extends DataObject<{}, undefined, IErrorEvent> implem
 
     public static get Name() { return "@fluid-example/signal-manager"; }
 
-    public static readonly factory = new DataObjectFactory<SignalManager, undefined, undefined, IErrorEvent>
-    (
+    public static readonly factory = new DataObjectFactory(
         SignalManager.Name,
         SignalManager,
         [],

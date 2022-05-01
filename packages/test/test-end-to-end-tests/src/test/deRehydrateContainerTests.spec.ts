@@ -6,6 +6,7 @@
 import { strict as assert } from "assert";
 import { compare } from "semver";
 import { bufferToString } from "@fluidframework/common-utils";
+import { IContainer, IFluidCodeDetails } from "@fluidframework/container-definitions";
 import { Container, Loader } from "@fluidframework/container-loader";
 import {
     LocalCodeLoader,
@@ -17,33 +18,107 @@ import {
     ITestObjectProvider,
 } from "@fluidframework/test-utils";
 import { SharedMap, SharedDirectory } from "@fluidframework/map";
-import { IDocumentAttributes } from "@fluidframework/protocol-definitions";
+import { IDocumentAttributes, ISummaryTree, SummaryType } from "@fluidframework/protocol-definitions";
 import { IContainerRuntimeBase } from "@fluidframework/runtime-definitions";
 import { ConsensusRegisterCollection } from "@fluidframework/register-collection";
-import { IntervalType } from "@fluidframework/merge-tree";
-import { SharedString, SparseMatrix } from "@fluidframework/sequence";
+import { IntervalType, SharedString, SparseMatrix } from "@fluidframework/sequence";
 import { SharedCell } from "@fluidframework/cell";
 import { Ink } from "@fluidframework/ink";
 import { SharedMatrix } from "@fluidframework/matrix";
 import { ConsensusQueue, ConsensusOrderedCollection } from "@fluidframework/ordered-collection";
 import { SharedCounter } from "@fluidframework/counter";
-import { IRequest, IFluidCodeDetails } from "@fluidframework/core-interfaces";
+import { IRequest } from "@fluidframework/core-interfaces";
 import { requestFluidObject } from "@fluidframework/runtime-utils";
-import { describeFullCompat } from "@fluidframework/test-version-utils";
+import { describeFullCompat, itExpects } from "@fluidframework/test-version-utils";
 import {
     getSnapshotTreeFromSerializedContainer,
     ISnapshotTreeWithBlobContents,
-    // eslint-disable-next-line import/no-internal-modules
+// eslint-disable-next-line import/no-internal-modules
 } from "@fluidframework/container-loader/dist/utils";
 
 const detachedContainerRefSeqNumber = 0;
+
+const fluidCodeDetails: IFluidCodeDetails = {
+    package: "detachedContainerTestPackage1",
+    config: {},
+};
+
+// Quorum val transormations
+const quorumKey = "code";
+const baseQuorum = [
+    [
+        quorumKey,
+        {
+            key: quorumKey,
+            value: fluidCodeDetails,
+            approvalSequenceNumber: 0,
+            commitSequenceNumber: 0,
+            sequenceNumber: 0,
+        },
+    ],
+];
+
+const baseAttributes = {
+    minimumSequenceNumber: 0,
+    sequenceNumber: 0,
+    term: 1,
+};
+
+const baseSummarizer = {
+    electionSequenceNumber: 0,
+};
+
+function buildSummaryTree(attr, quorumVal, summarizer): ISummaryTree {
+    return {
+        type: SummaryType.Tree,
+        tree: {
+            ".metadata": {
+                type: 2,
+                content: "{}",
+            },
+            ".electedSummarizer": {
+                type: 2,
+                content: JSON.stringify(summarizer),
+            },
+            ".protocol": {
+                type: 1,
+                tree: {
+                    quorumMembers: {
+                        type: SummaryType.Blob,
+                        content: "[]",
+                    },
+                    quorumProposals: {
+                        type: SummaryType.Blob,
+                        content: "[]",
+                    },
+                    quorumValues: {
+                        type: SummaryType.Blob,
+                        content: JSON.stringify(quorumVal),
+                    },
+                    attributes: {
+                        type: SummaryType.Blob,
+                        content: JSON.stringify(attr),
+                    },
+                },
+            },
+            ".app": {
+                type: 1,
+                tree: {
+                    [".channels"]: {
+                        type: SummaryType.Tree,
+                        tree: {},
+                    },
+                },
+            },
+        },
+    };
+}
 
 describeFullCompat(`Dehydrate Rehydrate Container Test`, (getTestObjectProvider) => {
     let disableIsolatedChannels = false;
 
     function assertSubtree(tree: ISnapshotTreeWithBlobContents, key: string, msg?: string):
-        ISnapshotTreeWithBlobContents
-    {
+        ISnapshotTreeWithBlobContents {
         const subTree = tree.trees[key];
         assert(subTree, msg ?? `${key} subtree not present`);
         return subTree;
@@ -96,7 +171,7 @@ describeFullCompat(`Dehydrate Rehydrate Container Test`, (getTestObjectProvider)
     const loaderContainerTracker = new LoaderContainerTracker();
 
     async function createDetachedContainerAndGetRootDataStore() {
-        const container = await loader.createDetachedContainer(codeDetails);
+        const container: IContainer = await loader.createDetachedContainer(codeDetails);
         // Get the root dataStore from the detached container.
         const response = await container.request({ url: "/" });
         const defaultDataStore = response.value as TestFluidObject;
@@ -145,7 +220,7 @@ describeFullCompat(`Dehydrate Rehydrate Container Test`, (getTestObjectProvider)
     };
 
     const getSnapshotTreeFromSerializedSnapshot = (
-        container: Container,
+        container: IContainer,
     ) => {
         return getSnapshotTreeFromSerializedContainer(JSON.parse(container.serialize()));
     };
@@ -354,28 +429,36 @@ describeFullCompat(`Dehydrate Rehydrate Container Test`, (getTestObjectProvider)
             assert.strictEqual(sparseMatrix.id, sparseMatrixId, "Sparse matrix should exist!!");
         });
 
-        it("Storage in detached container", async () => {
+        itExpects("Storage in detached container",
+        [
+            { eventName: "fluid:telemetry:Container:NoRealStorageInDetachedContainer" },
+            { eventName: "fluid:telemetry:Container:NoRealStorageInDetachedContainer" },
+        ],
+        async () => {
             const { container } =
                 await createDetachedContainerAndGetRootDataStore();
 
             const snapshotTree = container.serialize();
-            assert(container.storage !== undefined, "Storage should be present in detached container");
+            assert((container as Container).storage !== undefined, "Storage should be present in detached container");
             const response = await container.request({ url: "/" });
             const defaultDataStore = response.value as TestFluidObject;
             assert(defaultDataStore.context.storage !== undefined,
                 "Storage should be present in detached data store");
             let success1: boolean | undefined;
-            await defaultDataStore.context.storage.getSnapshotTree(undefined).catch((err) => success1 = false);
+            await defaultDataStore.context.storage.getSnapshotTree(undefined).catch((err) => { success1 = false; });
             assert(success1 === false, "Snapshot fetch should not be allowed in detached data store");
 
-            const container2 = await loader.rehydrateDetachedContainerFromSnapshot(snapshotTree);
-            assert(container2.storage !== undefined, "Storage should be present in rehydrated container");
+            const container2: IContainer = await loader.rehydrateDetachedContainerFromSnapshot(snapshotTree);
+            assert(
+                (container2 as Container).storage !== undefined,
+                "Storage should be present in rehydrated container",
+            );
             const response2 = await container2.request({ url: "/" });
             const defaultDataStore2 = response2.value as TestFluidObject;
             assert(defaultDataStore2.context.storage !== undefined,
                 "Storage should be present in rehydrated data store");
             let success2: boolean | undefined;
-            await defaultDataStore2.context.storage.getSnapshotTree(undefined).catch((err) => success2 = false);
+            await defaultDataStore2.context.storage.getSnapshotTree(undefined).catch((err) => { success2 = false; });
             assert(success2 === false, "Snapshot fetch should not be allowed in rehydrated data store");
         });
 
@@ -438,9 +521,6 @@ describeFullCompat(`Dehydrate Rehydrate Container Test`, (getTestObjectProvider)
                             "Interval not deleted");
                     }
                 }
-                else {
-                    intervalsAfter.delete(interval.start.getOffset(), interval.end.getOffset());
-                }
             }
             for (const interval of intervalsAfter) {
                 assert.fail(
@@ -491,7 +571,7 @@ describeFullCompat(`Dehydrate Rehydrate Container Test`, (getTestObjectProvider)
             // Create another dataStore
             const peerDataStore = await createPeerDataStore(defaultDataStore.context.containerRuntime);
             const dataStore2 = peerDataStore.peerDataStore as TestFluidObject;
-            peerDataStore.peerDataStoreRuntimeChannel.attachGraph();
+            peerDataStore.peerDataStoreRuntimeChannel.bindToContext();
             const sharedMap1 = await dataStore2.getSharedObject<SharedMap>(sharedMapId);
             sharedMap1.set("0", "A");
             const snapshotTree = container.serialize();
@@ -536,7 +616,7 @@ describeFullCompat(`Dehydrate Rehydrate Container Test`, (getTestObjectProvider)
             // Create another dataStore
             const peerDataStore = await createPeerDataStore(defaultDataStore.context.containerRuntime);
             const dataStore2 = peerDataStore.peerDataStore as TestFluidObject;
-            peerDataStore.peerDataStoreRuntimeChannel.attachGraph();
+            peerDataStore.peerDataStoreRuntimeChannel.bindToContext();
             const sharedMap1 = await dataStore2.getSharedObject<SharedMap>(sharedMapId);
             sharedMap1.set("0", "A");
             const snapshotTree = container.serialize();
@@ -693,6 +773,24 @@ describeFullCompat(`Dehydrate Rehydrate Container Test`, (getTestObjectProvider)
 
             assertProtocolTree(snapshotTree);
             assertDatastoreTree(snapshotTree, "default");
+        });
+
+        it("can rehydrate from arbitrary summary that is not generated from serialized container", async () => {
+            const summaryTree = buildSummaryTree(baseAttributes, baseQuorum, baseSummarizer);
+            const summaryString = JSON.stringify(summaryTree);
+
+            await assert.doesNotReject(loader.rehydrateDetachedContainerFromSnapshot(summaryString));
+        });
+
+        it("can rehydrate from summary that does not start with seq. #0", async () => {
+            const attr = {
+                ...baseAttributes,
+                sequenceNumber: 5,
+            };
+            const summaryTree = buildSummaryTree(attr, baseQuorum, baseSummarizer);
+            const summaryString = JSON.stringify(summaryTree);
+
+            await assert.doesNotReject(loader.rehydrateDetachedContainerFromSnapshot(summaryString));
         });
     };
 

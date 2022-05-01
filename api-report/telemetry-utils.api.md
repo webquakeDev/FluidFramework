@@ -17,6 +17,7 @@ import { ITelemetryGenericEvent } from '@fluidframework/common-definitions';
 import { ITelemetryLogger } from '@fluidframework/common-definitions';
 import { ITelemetryPerformanceEvent } from '@fluidframework/common-definitions';
 import { ITelemetryProperties } from '@fluidframework/common-definitions';
+import { Lazy } from '@fluidframework/common-utils';
 import { TelemetryEventCategory } from '@fluidframework/common-definitions';
 import { TelemetryEventPropertyType } from '@fluidframework/common-definitions';
 import { TypedEventEmitter } from '@fluidframework/common-utils';
@@ -28,6 +29,9 @@ export class ChildLogger extends TelemetryLogger {
     static create(baseLogger?: ITelemetryBaseLogger, namespace?: string, properties?: ITelemetryLoggerPropertyBags): TelemetryLogger;
     send(event: ITelemetryBaseEvent): void;
 }
+
+// @public (undocumented)
+export type ConfigTypes = string | number | boolean | number[] | string[] | boolean[] | undefined;
 
 // @public (undocumented)
 export const connectedEventName = "connected";
@@ -57,8 +61,14 @@ export function extractLogSafeErrorProperties(error: any, sanitizeStack: boolean
     stack?: string | undefined;
 };
 
+// @public
+export function generateErrorWithStack(): Error;
+
 // @public (undocumented)
 export function generateStack(): string | undefined;
+
+// @public
+export const getCircularReplacer: () => (key: string, value: any) => any;
 
 // @public (undocumented)
 export const hasErrorInstanceId: (x: any) => x is {
@@ -66,18 +76,41 @@ export const hasErrorInstanceId: (x: any) => x is {
 };
 
 // @public
+export interface IConfigProvider extends IConfigProviderBase {
+    // (undocumented)
+    getBoolean(name: string): boolean | undefined;
+    // (undocumented)
+    getBooleanArray(name: string): boolean[] | undefined;
+    // (undocumented)
+    getNumber(name: string): number | undefined;
+    // (undocumented)
+    getNumberArray(name: string): number[] | undefined;
+    // (undocumented)
+    getString(name: string): string | undefined;
+    // (undocumented)
+    getStringArray(name: string): string[] | undefined;
+}
+
+// @public
+export interface IConfigProviderBase {
+    // (undocumented)
+    getRawConfig(name: string): ConfigTypes;
+}
+
+// @public
 export interface IFluidErrorAnnotations {
     props?: ITelemetryProperties;
 }
 
 // @public
-export interface IFluidErrorBase extends Readonly<Partial<Error>> {
+export interface IFluidErrorBase extends Error {
     addTelemetryProperties: (props: ITelemetryProperties) => void;
     readonly errorInstanceId: string;
     readonly errorType: string;
-    readonly fluidErrorCode: string;
     getTelemetryProperties(): ITelemetryProperties;
     readonly message: string;
+    readonly name: string;
+    readonly stack?: string;
 }
 
 // @public
@@ -91,6 +124,9 @@ export interface IPerformanceEventMarkers {
 }
 
 // @public
+export function isExternalError(e: any): boolean;
+
+// @public
 export function isFluidError(e: any): e is IFluidErrorBase;
 
 // @public
@@ -100,7 +136,7 @@ export const isILoggingError: (x: any) => x is ILoggingError;
 export function isTaggedTelemetryPropertyValue(x: any): x is ITaggedTelemetryPropertyType;
 
 // @public
-export function isValidLegacyError(e: any): e is Omit<IFluidErrorBase, "fluidErrorCode">;
+export function isValidLegacyError(e: any): e is Omit<IFluidErrorBase, "errorInstanceId">;
 
 // @public (undocumented)
 export interface ITelemetryLoggerPropertyBag {
@@ -116,27 +152,45 @@ export interface ITelemetryLoggerPropertyBags {
     error?: ITelemetryLoggerPropertyBag;
 }
 
+// @public (undocumented)
+export function loggerToMonitoringContext<L extends ITelemetryBaseLogger = ITelemetryLogger>(logger: L): MonitoringContext<L>;
+
 // @public
 export class LoggingError extends Error implements ILoggingError, Pick<IFluidErrorBase, "errorInstanceId"> {
     constructor(message: string, props?: ITelemetryProperties, omitPropsFromLogging?: Set<string>);
     addTelemetryProperties(props: ITelemetryProperties): void;
     // (undocumented)
-    readonly errorInstanceId: string;
+    get errorInstanceId(): string;
     getTelemetryProperties(): ITelemetryProperties;
-    }
+    // (undocumented)
+    overwriteErrorInstanceId(id: string): void;
+}
 
 // @public
 export function logIfFalse(condition: any, logger: ITelemetryBaseLogger, event: string | ITelemetryGenericEvent): condition is true;
 
+// @public (undocumented)
+export function mixinMonitoringContext<L extends ITelemetryBaseLogger = ITelemetryLogger>(logger: L, ...configs: (IConfigProviderBase | undefined)[]): MonitoringContext<L>;
+
 // @public
 export class MockLogger extends TelemetryLogger implements ITelemetryLogger {
     constructor();
+    assertMatch(expectedEvents: Omit<ITelemetryBaseEvent, "category">[], message?: string): void;
+    assertMatchAny(expectedEvents: Omit<ITelemetryBaseEvent, "category">[], message?: string): void;
     // (undocumented)
     events: ITelemetryBaseEvent[];
     matchAnyEvent(expectedEvents: Omit<ITelemetryBaseEvent, "category">[]): boolean;
     matchEvents(expectedEvents: Omit<ITelemetryBaseEvent, "category">[]): boolean;
     // (undocumented)
     send(event: ITelemetryBaseEvent): void;
+}
+
+// @public
+export interface MonitoringContext<L extends ITelemetryBaseLogger = ITelemetryLogger> {
+    // (undocumented)
+    config: IConfigProvider;
+    // (undocumented)
+    logger: L;
 }
 
 // @public
@@ -150,6 +204,9 @@ export class MultiSinkLogger extends TelemetryLogger {
 
 // @public
 export function normalizeError(error: unknown, annotations?: IFluidErrorAnnotations): IFluidErrorBase;
+
+// @public
+export function originatedAsExternalError(e: any): boolean;
 
 // @public
 export class PerformanceEvent {
@@ -178,6 +235,9 @@ export function raiseConnectedEvent(logger: ITelemetryLogger, emitter: EventEmit
 export function safeRaiseEvent(emitter: EventEmitter, logger: ITelemetryLogger, event: string, ...args: any[]): void;
 
 // @public
+export const sessionStorageConfigProvider: Lazy<IConfigProviderBase>;
+
+// @public @deprecated (undocumented)
 export class TaggedLoggerAdapter implements ITelemetryBaseLogger {
     constructor(logger: ITelemetryBaseLogger);
     // (undocumented)
@@ -247,10 +307,10 @@ export class ThresholdCounter {
     }
 
 // @public
-export function wrapError<T extends IFluidErrorBase>(innerError: unknown, newErrorFn: (message: string) => T): T;
+export function wrapError<T extends LoggingError>(innerError: unknown, newErrorFn: (message: string) => T): T;
 
 // @public
-export function wrapErrorAndLog<T extends IFluidErrorBase>(innerError: unknown, newErrorFn: (message: string) => T, logger: ITelemetryLogger): T;
+export function wrapErrorAndLog<T extends LoggingError>(innerError: unknown, newErrorFn: (message: string) => T, logger: ITelemetryLogger): T;
 
 
 // (No @packageDocumentation comment for this package)

@@ -17,7 +17,6 @@ import {
 } from "@fluidframework/core-interfaces";
 import {
     IAudience,
-    ContainerWarning,
     ILoader,
     AttachState,
     ILoaderOptions,
@@ -27,6 +26,7 @@ import { DebugLogger } from "@fluidframework/telemetry-utils";
 import {
     ICommittedProposal,
     IQuorum,
+    IQuorumClients,
     ISequencedClient,
     ISequencedDocumentMessage,
     ISummaryTree,
@@ -42,7 +42,7 @@ import {
     IChannelStorageService,
     IChannelServices,
 } from "@fluidframework/datastore-definitions";
-import { FluidSerializer, getNormalizedObjectStoragePathParts, mergeStats } from "@fluidframework/runtime-utils";
+import { getNormalizedObjectStoragePathParts, mergeStats } from "@fluidframework/runtime-utils";
 import {
     IFluidDataStoreChannel,
     IGarbageCollectionData,
@@ -262,7 +262,6 @@ export class MockQuorum implements IQuorum, EventEmitter {
         }
         this.map.set(key, value);
         this.eventEmitter.emit("approveProposal", 0, key, value);
-        this.eventEmitter.emit("commitProposal", 0, key, value);
     }
 
     has(key: string): boolean {
@@ -314,7 +313,6 @@ export class MockQuorum implements IQuorum, EventEmitter {
             case "removeMember":
             case "addProposal":
             case "approveProposal":
-            case "commitProposal":
                 this.eventEmitter.on(event, listener);
                 this.eventEmitter.emit("afterOn", event);
                 return this;
@@ -378,8 +376,6 @@ export class MockFluidDataStoreRuntime extends EventEmitter
     public get objectsRoutingContext(): IFluidHandleContext { return this; }
 
     public get IFluidRouter() { return this; }
-
-    public readonly IFluidSerializer = new FluidSerializer(this.IFluidHandleContext);
 
     public readonly documentId: string;
     public readonly id: string = uuid();
@@ -446,7 +442,7 @@ export class MockFluidDataStoreRuntime extends EventEmitter
         return;
     }
 
-    public getQuorum(): IQuorum {
+    public getQuorum(): IQuorumClients {
         return this.quorum;
     }
 
@@ -502,6 +498,8 @@ export class MockFluidDataStoreRuntime extends EventEmitter
         return null;
     }
 
+    public addedGCOutboundReference(srcHandle: IFluidHandle, outboundHandle: IFluidHandle): void {}
+
     public async summarize(fullTree?: boolean, trackState?: boolean): Promise<ISummaryTreeWithStats> {
         const stats = mergeStats();
         stats.treeNodeCount++;
@@ -549,8 +547,6 @@ export class MockFluidDataStoreRuntime extends EventEmitter
     public async requestDataStore(request: IRequest): Promise<IResponse> {
         return null;
     }
-
-    public raiseContainerWarning(warning: ContainerWarning): void { }
 
     public reSubmit(content: any, localOpMetadata: unknown) {
         return;
