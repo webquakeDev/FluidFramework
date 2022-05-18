@@ -329,7 +329,7 @@ export const getCircularReplacer = () => {
  * PLEASE take care to avoid setting sensitive data on this object without proper tagging!
  */
 export class LoggingError extends Error implements ILoggingError, Pick<IFluidErrorBase, "errorInstanceId"> {
-    private _errorInstanceId = uuid();
+    private _errorInstanceId: string = uuid();
     get errorInstanceId() { return this._errorInstanceId; }
     overwriteErrorInstanceId(id: string) { this._errorInstanceId = id; }
 
